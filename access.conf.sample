@@ -1,0 +1,44 @@
+# RISC OS Access/ShareFS Server - Sample Configuration
+# Copy this file to access.conf and customize
+
+[server]
+# Logging: none, error, info, debug, protocol
+log_level = info
+
+# Broadcast interval in seconds (default: 30)
+broadcast_interval = 30
+
+# Enable Access+ authentication (port 32771)
+access_plus = true
+
+# Example shares - uncomment and customize
+
+#[share:Public]
+#path = /home/user/riscos-share
+#attributes = readonly
+
+#[share:Documents]
+#path = /home/user/documents
+#attributes = protected
+#password = secret
+
+#[share:Software]
+#path = /srv/riscos-apps
+#attributes = readonly, hidden
+
+# Example printer - uncomment and customize
+
+#[printer:LaserJet]
+#path = /var/spool/riscos/laserjet
+#definition = /usr/share/riscos/printers/PostScript,fc6
+#description = PostScript Printer
+#poll_interval = 5
+#command = lpr -P laserjet %f
+
+# MIME type mappings - override default extension->filetype mappings
+[mimemap]
+# Format: extension = hex_filetype (without 0x prefix)
+# Uncomment to override defaults:
+# txt = FFF
+# pdf = ADF
+# bas = FFB

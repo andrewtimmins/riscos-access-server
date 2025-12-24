@@ -1,0 +1,2 @@
+/usr/bin/ar qc libras.a CMakeFiles/ras.dir/log.c.o CMakeFiles/ras.dir/config.c.o CMakeFiles/ras.dir/platform.c.o CMakeFiles/ras.dir/net.c.o CMakeFiles/ras.dir/handle.c.o CMakeFiles/ras.dir/broadcast.c.o CMakeFiles/ras.dir/server.c.o CMakeFiles/ras.dir/printer.c.o CMakeFiles/ras.dir/riscos.c.o CMakeFiles/ras.dir/accessplus.c.o CMakeFiles/ras.dir/ops.c.o
+/usr/bin/ranlib libras.a
