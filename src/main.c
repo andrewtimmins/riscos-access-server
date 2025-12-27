@@ -15,8 +15,20 @@
 
 int main(int argc, char **argv) {
     const char *config_path = "access.conf";
-    if (argc > 1) {
-        config_path = argv[1];
+    const char *bind_addr = NULL;
+    
+    // Parse command-line arguments
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-b") == 0 && i + 1 < argc) {
+            bind_addr = argv[++i];
+        } else if (argv[i][0] != '-') {
+            config_path = argv[i];
+        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            fprintf(stderr, "Usage: %s [-b bind_addr] [config_file]\n", argv[0]);
+            fprintf(stderr, "  -b bind_addr  IP address to bind to (e.g., 192.168.1.100)\n");
+            fprintf(stderr, "                Required for Windows WiFi adapters!\n");
+            return EXIT_SUCCESS;
+        }
     }
 
     if (ras_platform_init() != 0) {
@@ -40,9 +52,12 @@ int main(int argc, char **argv) {
 
     ras_log_set_level(ras_log_level_from_string(cfg.server.log_level));
     ras_log(RAS_LOG_INFO, "ras-server starting with config %s", config_path);
+    if (bind_addr) {
+        ras_log(RAS_LOG_INFO, "Binding to specific address: %s", bind_addr);
+    }
 
     ras_net net;
-    if (ras_net_open(&net, NULL) != 0) {
+    if (ras_net_open(&net, bind_addr) != 0) {
         fprintf(stderr, "Failed to open network sockets\n");
         ras_config_unload(&cfg);
         ras_platform_shutdown();

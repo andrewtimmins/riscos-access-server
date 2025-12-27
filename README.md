@@ -15,16 +15,70 @@ A C11 implementation of an Acorn Access/ShareFS-compatible server for Linux and 
 - Configurable logging levels and extension-to-filetype mapping
 
 ## Build
+
+### Linux (Native)
 ```sh
+# Configure
 cmake -S . -B build
+
+# Build
+cmake --build build
+
+# Or with parallel jobs for faster builds
+cmake --build build -j$(nproc)
+```
+
+### Windows (Cross-Compilation from Linux)
+
+**Prerequisites:**
+Install MinGW-w64 cross-compiler:
+```sh
+# Ubuntu/Debian
+sudo apt-get install mingw-w64
+
+# Fedora/RHEL
+sudo dnf install mingw64-gcc
+```
+
+**Build:**
+```sh
+# Clean previous build
+rm -rf build
+
+# Configure with MinGW toolchain
+cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=mingw-w64-x86_64.cmake
+
+# Build
 cmake --build build
 ```
 
-On Windows/MinGW ensure `ws2_32` is available; on Linux pthreads are linked.
+The Windows executable will be at `build/src/access.exe`.
 
 ## Run
+
+### Linux
 ```sh
-./build/access access.conf
+./build/src/access access.conf
+```
+
+### Windows
+
+**Important for WiFi users:** Windows WiFi adapters require binding to a specific IP address. First, find your WiFi adapter's IP:
+
+```cmd
+ipconfig
+```
+
+Look for your WiFi adapter's IPv4 address (e.g., `192.168.1.100`), then run:
+
+```cmd
+access.exe -b 192.168.1.100 access.conf
+```
+
+For wired Ethernet on Windows, you can usually omit the `-b` option:
+
+```cmd
+access.exe access.conf
 ```
 
 ## Configuration (access.conf)

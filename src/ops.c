@@ -13,10 +13,22 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
 #include <strings.h>
+#endif
 #include <sys/stat.h>
 #include <unistd.h>
 #include <utime.h>
+
+// Windows compatibility for POSIX I/O functions
+#ifdef _WIN32
+#include <io.h>
+#include <direct.h>
+#define write _write
+#define read _read
+// Windows mkdir only takes path, not mode
+#define mkdir(path, mode) _mkdir(path)
+#endif
 
 // Maximum pending write transfers
 #define MAX_PENDING_WRITES 32
@@ -191,11 +203,22 @@ static int find_file_with_suffix(const char *base_path, char *out, size_t out_sz
     while ((ent = readdir(d)) != NULL) {
         size_t ent_len = strlen(ent->d_name);
         
-        // Check for base name + ,xxx pattern
+        // Check for base name + ,xxx pattern (RISC OS style)
         if (ent_len == filename_len + 4 &&
             strncasecmp(ent->d_name, filename, filename_len) == 0 &&
             ent->d_name[filename_len] == ',' &&
             ras_filetype_from_suffix(ent->d_name) >= 0) {
+            
+            snprintf(out, out_sz, "%s/%s", dir_path, ent->d_name);
+            closedir(d);
+            return 0;
+        }
+        
+        // Also check for Windows-style extensions (base name + .ext)
+        // Match if: entry starts with filename, has a dot after it, and has an extension
+        if (ent_len > filename_len + 1 &&
+            strncasecmp(ent->d_name, filename, filename_len) == 0 &&
+            ent->d_name[filename_len] == '.') {
             
             snprintf(out, out_sz, "%s/%s", dir_path, ent->d_name);
             closedir(d);
@@ -233,7 +256,7 @@ static void send_d_pkt(ras_net *net, const unsigned char *rid, const void *data,
     ras_net_sendto(net->rpc, &pkt, 4 + dlen, addr, port);
 }
 
-static void send_s_pkt(ras_net *net, const unsigned char *rid, const void *data, size_t dlen, const char *addr, unsigned short port) {
+__attribute__((unused)) static void send_s_pkt(ras_net *net, const unsigned char *rid, const void *data, size_t dlen, const char *addr, unsigned short port) {
     unsigned char header[4] = { 'S', rid[0], rid[1], rid[2] };
     struct { unsigned char h[4]; unsigned char p[2048]; } pkt;
     if (dlen > sizeof(pkt.p)) dlen = sizeof(pkt.p);

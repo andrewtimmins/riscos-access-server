@@ -66,8 +66,12 @@ int ras_net_open(ras_net *net, const char *bind_addr) {
     int yes = 1;
 #ifdef _WIN32
     setsockopt(net->broadcast, SOL_SOCKET, SO_BROADCAST, (const char *)&yes, sizeof(yes));
+    ras_log(RAS_LOG_INFO, "Sockets opened - broadcast:%llu auth:%llu rpc:%llu",
+            (unsigned long long)net->broadcast, (unsigned long long)net->auth, (unsigned long long)net->rpc);
 #else
     setsockopt(net->broadcast, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes));
+    ras_log(RAS_LOG_INFO, "Sockets opened - broadcast:%d auth:%d rpc:%d",
+            net->broadcast, net->auth, net->rpc);
 #endif
     return 0;
 }
