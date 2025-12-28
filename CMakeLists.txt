@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(riscos-access-server VERSION 0.1.0 LANGUAGES C)
+project(riscos-access-server VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -11,6 +11,7 @@ if(NOT WIN32)
 endif()
 
 option(RAS_ENABLE_WARNINGS "Enable extra warnings" ON)
+option(RAS_BUILD_ADMIN "Build wxWidgets admin GUI" ON)
 
 if(RAS_ENABLE_WARNINGS)
     if(MSVC)
@@ -21,3 +22,8 @@ if(RAS_ENABLE_WARNINGS)
 endif()
 
 add_subdirectory(src)
+
+# Admin GUI (wxWidgets required)
+if(RAS_BUILD_ADMIN)
+    add_subdirectory(admin)
+endif()

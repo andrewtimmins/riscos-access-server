@@ -15,6 +15,7 @@
 #include <sys/select.h>
 #endif
 #include <sys/stat.h>
+#include <errno.h>
 
 // Send RDEADHANDLES broadcast to all clients
 static void broadcast_dead_handles(ras_handle_table *handles, ras_net *net) {
