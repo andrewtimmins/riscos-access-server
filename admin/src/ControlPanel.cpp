@@ -79,12 +79,6 @@ ControlPanel::ControlPanel(wxWindow* parent, MainFrame* frame)
     wxButton* browseBtn = new wxButton(this, ID_BROWSE_CONFIG, "Browse...");
     configGrid->Add(browseBtn, 0);
     
-    configGrid->Add(new wxStaticText(this, wxID_ANY, "Bind Address:"), 0, wxALIGN_CENTER_VERTICAL);
-    m_bindAddr = new wxTextCtrl(this, wxID_ANY, "");
-    m_bindAddr->SetHint("Optional (e.g., 192.168.1.100)");
-    configGrid->Add(m_bindAddr, 1, wxEXPAND);
-    configGrid->AddSpacer(0);
-    
     mainSizer->Add(configGrid, 0, wxEXPAND | wxALL, 15);
     
     // Log section
@@ -172,7 +166,6 @@ void ControlPanel::OnStart(wxCommandEvent& event) {
     if (m_running) return;
     
     wxString config = m_configPath->GetValue();
-    wxString bind = m_bindAddr->GetValue();
     
     if (config.empty()) {
         AppendLog("[ERROR] No configuration file specified.\n");
@@ -197,9 +190,6 @@ void ControlPanel::OnStart(wxCommandEvent& event) {
     
     // Build command
     wxString cmd = accessPath;
-    if (!bind.empty()) {
-        cmd += " -b " + bind;
-    }
     cmd += " " + config;
     
     // Create process

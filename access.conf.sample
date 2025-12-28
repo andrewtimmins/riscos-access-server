@@ -5,6 +5,9 @@
 # Logging: none, error, info, debug, protocol
 log_level = info
 
+# Bind to specific IP address (default: all interfaces)
+# bind_ip = 192.168.0.2
+
 # Broadcast interval in seconds (default: 30)
 broadcast_interval = 30
 

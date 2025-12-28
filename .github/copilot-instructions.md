@@ -2,18 +2,93 @@
 
 ## Project Overview
 
-This project implements an Acorn Access/ShareFS-compatible file server in C, enabling modern Linux/Windows systems to serve files to RISC OS machines over a network.
+This project implements an Acorn Access/ShareFS-compatible file server in C, enabling modern Linux/Windows systems to serve files to RISC OS machines over a network. It includes a wxWidgets-based Admin GUI for easy configuration and server control.
+
+## Project Structure
+
+```
+riscos-access-server/
+├── src/                    # C server source code
+│   ├── main.c              # Entry point
+│   ├── server.c/h          # Main server loop
+│   ├── config.c/h          # Configuration file parser
+│   ├── net.c/h             # Network abstraction
+│   ├── broadcast.c/h       # Freeway broadcasts
+│   ├── ops.c/h             # ShareFS protocol operations
+│   ├── handle.c/h          # File handle management
+│   ├── printer.c/h         # Printer support
+│   ├── riscos.c/h          # RISC OS filetype/date utilities
+│   ├── accessplus.c/h      # Access+ authentication
+│   ├── platform.c/h        # Platform abstraction
+│   └── log.c/h             # Logging
+├── admin/                  # wxWidgets Admin GUI (C++)
+│   ├── CMakeLists.txt      # GUI build configuration
+│   └── src/
+│       ├── main.cpp        # wxApp entry point
+│       ├── MainFrame.cpp/h # Main window with tabs
+│       ├── ConfigIO.cpp/h  # Config file I/O
+│       ├── ServerPanel.cpp/h
+│       ├── SharesPanel.cpp/h
+│       ├── PrintersPanel.cpp/h
+│       ├── MimePanel.cpp/h
+│       └── ControlPanel.cpp/h  # Start/stop/logs
+├── CMakeLists.txt          # Root build configuration
+├── mingw-w64-x86_64.cmake  # MinGW cross-compile toolchain
+├── access.conf             # Sample configuration
+└── README.md
+```
 
 ## Design Decisions
 
-- **Handle limit**: No artificial limit (unlike RISC OS's 256) - use dynamic allocation
-- **Dependencies**: Minimal - standard C library + POSIX/Winsock sockets only, no external libraries
-- **Logging**: Configurable levels (PROTOCOL/API/INFO), can be disabled at compile or runtime
-- **Full protocol**: Implement ALL operations including RDEADHANDLES, RFREESPACE, RZERO, RVERSION
+- **Server Language**: C11 with minimal dependencies (POSIX/Winsock only)
+- **Admin GUI**: wxWidgets C++ for cross-platform native look and static linking
+- **Handle limit**: Dynamic allocation (no artificial 256 limit)
+- **Configuration**: INI-style `access.conf` file
+- **Cross-compilation**: Full Windows support via MinGW-w64
 
-## Architecture
+## Building
 
-### Protocol Fundamentals
+### Linux (Native)
+
+```bash
+cmake -S . -B build
+cmake --build build -j$(nproc)
+# Produces: build/src/access, build/admin/access-admin
+```
+
+### Windows (Cross-Compile)
+
+```bash
+# Server only
+cmake -S . -B build-win -DCMAKE_TOOLCHAIN_FILE=mingw-w64-x86_64.cmake -DRAS_BUILD_ADMIN=OFF
+cmake --build build-win
+
+# Server + GUI (requires wxWidgets built for MinGW, see README.md)
+cmake -S . -B build-win -DCMAKE_TOOLCHAIN_FILE=mingw-w64-x86_64.cmake \
+    -DwxWidgets_CONFIG_EXECUTABLE=$HOME/wxWidgets-mingw/install/bin/wx-config
+cmake --build build-win
+```
+
+## Admin GUI Architecture
+
+The Admin GUI uses wxWidgets with a tabbed notebook interface:
+
+- **MainFrame**: Main window, handles file menu, Apply/Revert buttons
+- **ConfigIO**: Parses and writes `access.conf` (mirrors server's config.c logic)
+- **ServerPanel**: Log level, broadcast interval, Access+ toggle
+- **SharesPanel**: CRUD for shares with attribute checkboxes
+- **PrintersPanel**: CRUD for printers with spool settings
+- **MimePanel**: Extension-to-filetype mappings
+- **ControlPanel**: Start/stop/restart buttons, live log viewer
+
+### Key GUI Patterns
+
+- All panels receive a `MainFrame*` pointer for accessing config and setting modified state
+- `RefreshFromConfig()` method on each panel to reload from config object
+- Call `m_frame->SetModified(true)` when any field changes
+- "Apply & Restart" saves config and calls `ControlPanel::RestartServer()`
+
+## Protocol Fundamentals
 
 The ShareFS protocol uses **UDP** on three fixed ports:
 
@@ -25,12 +100,9 @@ The ShareFS protocol uses **UDP** on three fixed ports:
 
 ### Message Format (Port 49171)
 
-Messages use a binary format with little-endian integers:
 - **Byte 0**: Command character (e.g., `'A'`, `'B'`, `'R'`, `'E'`, `'S'`, `'D'`)
 - **Bytes 1-3**: Reply ID (correlation token, echoed in responses)
 - **Bytes 4+**: Command-specific payload
-
-Responses use: `'R'` (success), `'E'` (error), `'S'` (catalogue data), `'D'` (file data)
 
 ### Operation Codes 
 
@@ -69,87 +141,40 @@ enum op {
 #define ATTRIBUTE_HIDDEN    0x04  // Hidden from browser
 #define ATTRIBUTE_SUBDIR    0x08  // Access+ subdirectory share
 #define ATTRIBUTE_CDROM     0x10  // CD-ROM share
+
+### Advanced Protocol Logic
+
+**A-Command RREAD (0x0b):**
+Uses a 4-step "Ping-Pong" state machine to prevent UDP packet loss:
+1. Client sends `A` command (RREAD). Srv creates `pending_read_t`.
+2. Srv sends `D` packet (chunk of data).
+3. Client sends `r` acknowledgement packet.
+4. Srv sends next `D` packet or completion status.
+
+**B-Command RREAD:**
+If `pos == 0xFFFFFFFF`, perform a **sequential read** from the current file pointer (`lseek(fd, 0, SEEK_CUR)`).
+
+**RWRITE (0x0c):**
+Must enforce **strict sequentiality** of incoming `d` packets. If a gap is detected (packet loss), drop the packet and send `w` (ACK) to request retransmission of the missing offset. Do NOT `lseek` past holes, as this creates zero-filled corruption.
+
+**RGETSEQPTR (0x11):**
+Returns the current sequential file pointer using `lseek(fd, 0, SEEK_CUR)`. Important for execution of Obey/Run files.
+
+**Text Files:**
+The server treats all files as binary. Text file translation (LF vs CR) is **NOT** performed. Obey files (`&FEB`) must have CR line endings to execute on RISC OS 3.70+.
 ```
 
-### FileDesc Structure 
+## RISC OS Date/Time Format
 
-```c
-typedef struct FileDesc {
-    Information_Fields info;  // Load/exec addresses (contains filetype+date)
-    int length;               // File length
-    int attr;                 // RISC OS attributes (R/W/L/r/w bits)
-    int type:8;               // 0=not found, 1=file, 2=directory
-    int buffered:1;
-    int interactive:1;
-    int noosgbpb:1;
-} FileDesc;
-```
+5-byte centiseconds since 1900-01-01. Load/exec addresses encode filetype and timestamp:
 
-### RISC OS Attributes 
-
-```c
-#define Attr_R  0x01  // Owner readable
-#define Attr_W  0x02  // Owner writable  
-#define Attr_L  0x08  // Locked
-#define Attr_r  0x10  // Public readable
-#define Attr_w  0x20  // Public writable
-```
-
-## Key Implementation Details
-
-### Freeway Broadcast Format (Port 32770)
-
-Header (3 words):
-```
-Word 0: (major_type << 16) | minor_type
-Word 1: Flags/version info
-Word 2: (length2 << 16) | length1
-```
-
-Types:
-- **0x0001**: Discs (minor: 0x02=add, 0x03=remove, 0x04=periodic)
-- **0x0002**: Printers (minor: 0x02=add, 0x03=remove, 0x04=periodic)
-- **0x0005**: Hosts/clients
-
-### Printer Sharing Protocol
-
-Printers are announced on port 32770 using major type `0x0002`. The broadcast format is identical to disc shares:
-
-```
-Word 0: 0x0002XXYY  (XX=00, YY=02/03/04 for add/remove/periodic)
-Word 1: 0x00010000  (flags/version)
-Word 2: (description_len << 16) | name_len
-Data:   name + description (null-terminated strings)
-```
-
-**Directory Structure:** When a printer is shared, the server creates:
-```
-<printer_directory>/
-├── <printername>.fc6    # Printer definition file (filetype 0xFC6/PrntDefn)
-├── RemQueue/            # Queue for jobs being processed
-└── RemSpool/            # Incoming spool directory (clients write here)
-```
-
-**Print Job Flow:**
-1. Client writes print job file to `RemSpool/` directory
-2. Server detects new file (via polling or inotify/ReadDirectoryChanges)
-3. Server moves file to `RemQueue/` for processing
-4. Server executes configured print command with file as argument
-5. File is deleted after successful printing
-
-**Note:** Printer sharing was likely handled by a separate RISC OS module, not ShareFS itself. The original Acorn ShareFS source only defines `DOMAIN_DISCS` (1) and `DOMAIN_CLIENTS` (5), not printers. Our implementation adds printer support based on observed protocol behavior.
-
-### Date/Time Format
-
-RISC OS uses 5-byte centiseconds since 1900-01-01. The load/exec addresses encode filetype and timestamp:
 ```c
 // Load address format: 0xFFFTTTdd where TTT=filetype, dd=high byte of date
-// Exec address: low 4 bytes of date
 load_addr = 0xFFF00000 | (filetype << 8) | ((centiseconds >> 32) & 0xFF)
 exec_addr = centiseconds & 0xFFFFFFFF
 ```
 
-### Password Encoding (Access+)
+## Password Encoding (Access+)
 
 ```c
 static int encode_psw_char(char c) {
@@ -169,40 +194,43 @@ static int password_to_pin(char *buf) {
 }
 ```
 
-### Handle Management
+## Configuration File Format
 
-- Handle 0 is special: represents the root directory containing all exports
-- Handles are dynamically allocated (no 256 limit like RISC OS)
-- Each handle contains a randomized token to detect stale references
-- Server broadcasts dead handles via RDEADHANDLES to notify clients
+```ini
+[server]
+log_level = info
+broadcast_interval = 60
+access_plus = true
+bind_ip = 192.168.1.100  # Required for Windows WiFi
 
-### Directory Catalogue Format
+[share:Documents]
+path = /home/user/documents
+attributes = protected
+password = secret
+default_filetype = FFF
 
-OSGBPB format 10/11 - each entry:
+[printer:LaserJet]
+path = /var/spool/riscos/laserjet
+definition = /usr/share/riscos/printers/PostScript,fc6
+description = PostScript Level 2
+poll_interval = 5
+command = lpr -P laserjet %f
+
+[mimemap]
+pdf = ADF
+txt = FFF
 ```
-Offset 0:  FileDesc (20 bytes)
-Offset 20: Null-terminated filename
-Padding:   Aligned to 4-byte boundary
-```
 
-### Chunk Size Constants
-
-```c
-#define CHUNKSIZE   8192    // Default file transfer chunk
-#define WINDOWSIZE  2       // Concurrent outstanding requests (Access+)
-#define ROPENDIRSIZE 2048   // Directory data returned with ROPENDIR
-```
-
-## Cross-Platform Considerations
+## Cross-Platform Notes
 
 ### Socket Differences
 
-- **Windows**: Use same socket for broadcast and receive; bind to host address
-- **Linux**: Separate sockets; bind broadcast socket to broadcast address
+- **Windows**: Use same socket for broadcast and receive; bind to host address. **MUST** bind to specific IP (`bind_ip`) for WiFi to work (multicast behavior).
+- **Linux**: Separate sockets; bind broadcast socket to broadcast address.
 
 ### Build System
 
-Use CMake with MinGW support:
+CMake with MinGW support:
 ```cmake
 if(WIN32)
     target_link_libraries(access ws2_32)
@@ -211,100 +239,10 @@ else()
 endif()
 ```
 
-## Known Issues to Fix
-
-1. Directory catalogue returns incorrect date/access in trailer
-2. Setting filetype fails from RISC OS 5 Filer
-3. Changing from "Protected" access mode fails
-
-## File Naming Conventions
-
-- Source files: `src/` directory with logical subdirectories
-- Headers: Corresponding `.h` files alongside `.c` files
-- Platform-specific: `src/platform/{linux,windows}/`
+Admin GUI uses wxWidgets with static linking for Windows (single .exe).
 
 ## Testing
 
-Test with:
 - RPCEmu (RISC OS 3.x, 5.x emulator)
-- Real RISC OS hardware if available
+- Real RISC OS hardware
 - Wireshark with UDP port filters on 32770, 32771, 49171
-
-## Configuration File Format
-
-The server uses an INI-style configuration file (`access.conf` or specified via `-c` flag):
-
-```ini
-[server]
-# Logging: none, error, info, debug, protocol
-log_level = info
-
-# Broadcast interval in seconds (default: 30)
-broadcast_interval = 30
-
-# Enable Access+ authentication (port 32771)
-access_plus = true
-
-[share:Documents]
-# Local path to share (required)
-path = /home/user/documents
-
-# Share attributes (optional, default: none)
-# Options: protected, readonly, hidden, cdrom
-attributes = readonly
-
-# Password for protected shares (required if protected)
-# password = secret
-
-# Default filetype for extensionless files (hex, default: FFF)
-default_filetype = FFF
-
-[share:Public]
-path = /srv/public
-attributes = 
-
-[share:Software]
-path = /home/user/riscos-apps
-attributes = readonly, hidden
-
-[printer:LaserJet]
-# Local directory for print spool (required)
-path = /var/spool/riscos/laserjet
-
-# Printer definition file to copy (required, ,fc6/PrntDefn format)
-definition = /usr/share/riscos/printers/PostScript,fc6
-
-# Human-readable description shown to clients
-description = PostScript Level 2
-
-# Poll interval for new print jobs in seconds (default: 5)
-poll_interval = 5
-
-# Command to execute for each print job
-# %f = full path to spool file
-command = lpr -P laserjet %f
-
-[printer:PDFPrinter]
-path = /var/spool/riscos/pdf
-definition = /usr/share/riscos/printers/PostScript,fc6
-description = PDF Generator
-poll_interval = 3
-command = ps2pdf %f /home/user/PDFs/$(basename %f .ps).pdf
-
-[mimemap]
-# Override default RISC OS filetype mappings
-# Format: extension = hex_filetype
-pdf = ADF
-txt = FFF
-bas = FFB
-c = FFD
-h = FFD
-```
-
-### Configuration Notes
-
-- Section names are case-insensitive
-- Share/printer names must be valid RISC OS filenames (10 chars max, no spaces)
-- Multiple shares and printers can be defined
-- The `[mimemap]` section extends the built-in extension-to-filetype mapping
-- Paths use native OS format (forward slashes on Linux, either on Windows)

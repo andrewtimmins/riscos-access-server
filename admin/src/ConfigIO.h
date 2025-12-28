@@ -3,6 +3,7 @@
 #ifndef CONFIGIO_H
 #define CONFIGIO_H
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -39,6 +40,7 @@ struct ServerConfig {
     std::string log_level = "info";
     int broadcast_interval = 60;
     bool access_plus = false;
+    std::string bind_ip;
 };
 
 class RasConfig {

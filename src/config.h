@@ -39,6 +39,7 @@ typedef struct {
 
 typedef struct {
     char *log_level;
+    char *bind_ip;           // IP address to bind sockets to (NULL = all interfaces)
     int broadcast_interval;
     int access_plus;
 } ras_server_config;

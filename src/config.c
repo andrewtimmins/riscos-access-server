@@ -191,6 +191,9 @@ int ras_config_load(const char *path, ras_config *out) {
             if (strcmp(key, "log_level") == 0) {
                 free(out->server.log_level);
                 out->server.log_level = ras_strdup(val);
+            } else if (strcmp(key, "bind_ip") == 0) {
+                free(out->server.bind_ip);
+                out->server.bind_ip = ras_strdup(val);
             } else if (strcmp(key, "broadcast_interval") == 0) {
                 parse_int(val, &out->server.broadcast_interval);
             } else if (strcmp(key, "access_plus") == 0) {
@@ -261,6 +264,7 @@ void ras_config_unload(ras_config *cfg) {
     free(cfg->mimemap);
 
     free(cfg->server.log_level);
+    free(cfg->server.bind_ip);
     memset(cfg, 0, sizeof(*cfg));
 }
 

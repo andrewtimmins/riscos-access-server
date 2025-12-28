@@ -105,32 +105,20 @@ void ras_strip_type_suffix(const char *filename, char *out_buf, size_t out_sz) {
     
     size_t len = strlen(filename);
     
-    // Check if there's a ,xxx RISC OS suffix
+    // Check if there's a ,xxx suffix
     if (len >= 4 && ras_filetype_from_suffix(filename) >= 0) {
-        // Strip the ,xxx suffix
+        // Strip the suffix
         size_t copy_len = len - 4;
         if (copy_len >= out_sz) copy_len = out_sz - 1;
         memcpy(out_buf, filename, copy_len);
         out_buf[copy_len] = '\0';
-        return;
-    }
-    
-    // Also strip Windows-style .ext extensions
-    const char *dot = strrchr(filename, '.');
-    if (dot && dot != filename && dot > filename) {
-        // Copy everything before the dot
-        size_t copy_len = (size_t)(dot - filename);
+    } else {
+        // No suffix, copy as-is
+        size_t copy_len = len;
         if (copy_len >= out_sz) copy_len = out_sz - 1;
         memcpy(out_buf, filename, copy_len);
         out_buf[copy_len] = '\0';
-        return;
     }
-    
-    // No suffix or extension, copy as-is
-    size_t copy_len = len;
-    if (copy_len >= out_sz) copy_len = out_sz - 1;
-    memcpy(out_buf, filename, copy_len);
-    out_buf[copy_len] = '\0';
 }
 
 void ras_append_type_suffix(const char *path, uint32_t filetype, char *out, size_t out_sz) {

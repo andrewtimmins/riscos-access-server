@@ -13,4 +13,7 @@
 int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr, unsigned short port,
                    const ras_config *cfg, ras_net *net, ras_handle_table *handles, ras_auth_state *auth);
 
+int ras_rpc_handle_r(const unsigned char *buf, size_t len, const char *addr, unsigned short port,
+                     ras_net *net, ras_handle_table *handles);
+
 #endif

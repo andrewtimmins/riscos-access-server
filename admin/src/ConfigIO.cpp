@@ -97,6 +97,8 @@ bool RasConfig::Load(const std::string& path, std::string& error) {
                 m_server.broadcast_interval = std::stoi(value);
             } else if (key == "access_plus") {
                 m_server.access_plus = (ToLower(value) == "true" || value == "1");
+            } else if (key == "bind_ip") {
+                m_server.bind_ip = value;
             }
         } else if (currentShare) {
             if (key == "path") {
@@ -151,6 +153,9 @@ bool RasConfig::Save(const std::string& path, std::string& error) {
     file << "log_level = " << m_server.log_level << "\n";
     file << "broadcast_interval = " << m_server.broadcast_interval << "\n";
     file << "access_plus = " << (m_server.access_plus ? "true" : "false") << "\n";
+    if (!m_server.bind_ip.empty()) {
+        file << "bind_ip = " << m_server.bind_ip << "\n";
+    }
     file << "\n";
     
     // Shares

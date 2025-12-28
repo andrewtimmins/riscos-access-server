@@ -17,10 +17,12 @@ private:
     void OnLogLevelChanged(wxCommandEvent& event);
     void OnBroadcastChanged(wxSpinEvent& event);
     void OnAccessPlusChanged(wxCommandEvent& event);
+    void OnBindIpChanged(wxCommandEvent& event);
     
     MainFrame* m_frame;
     wxChoice* m_logLevel;
     wxSpinCtrl* m_broadcast;
+    wxTextCtrl* m_bindIp;
     wxCheckBox* m_accessPlus;
     bool m_updating = false;
 };

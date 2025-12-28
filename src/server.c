@@ -11,11 +11,11 @@
 
 #include <string.h>
 #include <time.h>
+#include <errno.h>
 #ifndef _WIN32
 #include <sys/select.h>
 #endif
 #include <sys/stat.h>
-#include <errno.h>
 
 // Send RDEADHANDLES broadcast to all clients
 static void broadcast_dead_handles(ras_handle_table *handles, ras_net *net) {
@@ -111,17 +111,7 @@ int ras_server_run(ras_config *cfg, ras_net *net, ras_handle_table *handles) {
 
         int ready = select((int)(maxfd + 1), &fds, NULL, NULL, &tv);
 
-        if (ready < 0) {
-#ifdef _WIN32
-            ras_log(RAS_LOG_ERROR, "select() failed: WSAError=%d", WSAGetLastError());
-#else
-            ras_log(RAS_LOG_ERROR, "select() failed: errno=%d", errno);
-#endif
-            break;
-        }
-
         if (ready > 0) {
-            ras_log(RAS_LOG_DEBUG, "select() returned %d ready sockets", ready);
             // Handle RPC packets
             if (FD_ISSET(net->rpc, &fds)) {
                 unsigned char buf[4096];

@@ -198,6 +198,9 @@ Both executables run on Windows without any additional DLLs.
 
 ## Running
 
+
+**Note for WiFi users:** Wifi Requires binding to a specific IP when using WiFi. Run `ipconfig` to find your adapter's IP address and add it to the `bind_ip` setting in `access.conf` (or use the Admin GUI to configure it).
+
 ### Using the Admin GUI (Recommended)
 
 The Admin GUI is the recommended way to configure and run the server:
@@ -227,14 +230,8 @@ You can also run the server from the command line:
 # Linux
 ./build/src/access access.conf
 
-# Windows (wired network)
+# Windows 
 access.exe access.conf
-
-# Windows (WiFi - must bind to your IP address)
-access.exe -b 192.168.1.100 access.conf
-```
-
-**Note for Windows WiFi users:** Windows requires binding to a specific IP when using WiFi. Run `ipconfig` to find your adapter's IP address.
 
 ---
 
@@ -248,7 +245,9 @@ The server is configured via `access.conf`. The Admin GUI is the easiest way to 
 [server]
 log_level = info
 broadcast_interval = 60
+
 access_plus = true
+bind_ip = 192.168.1.100  # Optional: Bind to specific interface
 
 [share:Public]
 path = /home/user/public
@@ -277,7 +276,9 @@ png = B60
 |---------|-------------|---------|
 | `log_level` | Logging verbosity: `debug`, `info`, `warn`, `error` | `info` |
 | `broadcast_interval` | Seconds between Freeway broadcasts (0 to disable) | `60` |
+
 | `access_plus` | Enable Access+ authentication support | `false` |
+| `bind_ip` | IP address to bind to (required for Windows WiFi) | `0.0.0.0` (all) |
 
 ### Share Attributes
 
@@ -311,7 +312,7 @@ The Admin GUI includes common default mappings when creating a new configuration
 
 1. Ensure the server and RISC OS machine are on the same network/subnet
 2. Check firewall allows UDP ports 32770, 32771, and 49171
-3. On Windows WiFi, make sure you specified `-b <your-ip-address>`
+3. On Windows WiFi, make sure you configured `bind_ip` in `access.conf` with your IP address
 
 ### Permission denied errors
 

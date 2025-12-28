@@ -38,7 +38,6 @@ private:
     wxButton* m_stopBtn;
     wxButton* m_restartBtn;
     wxTextCtrl* m_configPath;
-    wxTextCtrl* m_bindAddr;
     wxTextCtrl* m_logView;
     
     wxProcess* m_process = nullptr;

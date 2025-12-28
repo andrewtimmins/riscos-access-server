@@ -21,8 +21,15 @@ ServerPanel::ServerPanel(wxWindow* parent, MainFrame* frame)
     
     // Settings group
     wxStaticBoxSizer* settingsBox = new wxStaticBoxSizer(wxVERTICAL, this, "Configuration");
-    wxFlexGridSizer* grid = new wxFlexGridSizer(3, 2, 10, 15);
+    wxFlexGridSizer* grid = new wxFlexGridSizer(4, 2, 10, 15);
     grid->AddGrowableCol(1);
+    
+    // Bind IP
+    grid->Add(new wxStaticText(this, wxID_ANY, "Bind IP Address:"), 0, wxALIGN_CENTER_VERTICAL);
+    m_bindIp = new wxTextCtrl(this, wxID_ANY);
+    m_bindIp->SetHint("0.0.0.0 (Leave empty for all)");
+    m_bindIp->Bind(wxEVT_TEXT, &ServerPanel::OnBindIpChanged, this);
+    grid->Add(m_bindIp, 1, wxEXPAND);
     
     // Log level
     grid->Add(new wxStaticText(this, wxID_ANY, "Log Level:"), 0, wxALIGN_CENTER_VERTICAL);
@@ -68,6 +75,8 @@ void ServerPanel::RefreshFromConfig() {
     
     ServerConfig& cfg = m_frame->GetConfig().Server();
     
+    m_bindIp->ChangeValue(cfg.bind_ip);
+    
     // Log level
     int idx = m_logLevel->FindString(cfg.log_level);
     if (idx != wxNOT_FOUND) {
@@ -101,5 +110,13 @@ void ServerPanel::OnAccessPlusChanged(wxCommandEvent& event) {
     if (m_updating) return;
     
     m_frame->GetConfig().Server().access_plus = m_accessPlus->GetValue();
+    m_frame->SetModified(true);
+}
+
+void ServerPanel::OnBindIpChanged(wxCommandEvent& event) {
+    wxUnusedVar(event);
+    if (m_updating) return;
+    
+    m_frame->GetConfig().Server().bind_ip = m_bindIp->GetValue().ToStdString();
     m_frame->SetModified(true);
 }

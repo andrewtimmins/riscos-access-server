@@ -13,26 +13,14 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
-#ifndef _WIN32
 #include <strings.h>
-#endif
 #include <sys/stat.h>
 #include <unistd.h>
 #include <utime.h>
 
-// Windows compatibility for POSIX I/O functions
-#ifdef _WIN32
-#include <io.h>
-#include <direct.h>
-#define write _write
-#define read _read
-// Windows mkdir only takes path, not mode
-#define mkdir(path, mode) _mkdir(path)
-#endif
-
 // Maximum pending write transfers
 #define MAX_PENDING_WRITES 32
-#define WRITE_CHUNK_SIZE 8192
+#define WRITE_CHUNK_SIZE 4096
 
 // Pending write transfer state
 typedef struct {
@@ -72,6 +60,54 @@ static pending_write_t *alloc_pending_write(void) {
 
 static void free_pending_write(pending_write_t *pw) {
     if (pw) pw->active = 0;
+}
+
+// Pending read transfer state
+#define MAX_PENDING_READS 32
+#define READ_CHUNK_SIZE 1024
+
+// States for RREAD ping-pong protocol
+#define RAS_READ_STATE_WAIT_DATA_ACK   0
+#define RAS_READ_STATE_WAIT_STATUS_ACK 1
+
+typedef struct {
+    int active;
+    int state;                // Current state
+    int handle_id;
+    uint32_t start_pos;       // Original start position
+    uint32_t current_pos;     // Current position (being sent)
+    uint32_t end_pos;         // End position
+    unsigned char rid[3];
+    char addr[64];
+    unsigned short port;
+} pending_read_t;
+
+static pending_read_t pending_reads[MAX_PENDING_READS];
+
+static pending_read_t *find_pending_read(const unsigned char *rid) {
+    for (int i = 0; i < MAX_PENDING_READS; i++) {
+        if (pending_reads[i].active && 
+            pending_reads[i].rid[0] == rid[0] &&
+            pending_reads[i].rid[1] == rid[1] &&
+            pending_reads[i].rid[2] == rid[2]) {
+            return &pending_reads[i];
+        }
+    }
+    return NULL;
+}
+
+static pending_read_t *alloc_pending_read(void) {
+    for (int i = 0; i < MAX_PENDING_READS; i++) {
+        if (!pending_reads[i].active) {
+            pending_reads[i].active = 1;
+            return &pending_reads[i];
+        }
+    }
+    return NULL;
+}
+
+static void free_pending_read(pending_read_t *pr) {
+    if (pr) pr->active = 0;
 }
 
 static unsigned int read_u32(const unsigned char *p) {
@@ -203,22 +239,11 @@ static int find_file_with_suffix(const char *base_path, char *out, size_t out_sz
     while ((ent = readdir(d)) != NULL) {
         size_t ent_len = strlen(ent->d_name);
         
-        // Check for base name + ,xxx pattern (RISC OS style)
+        // Check for base name + ,xxx pattern
         if (ent_len == filename_len + 4 &&
             strncasecmp(ent->d_name, filename, filename_len) == 0 &&
             ent->d_name[filename_len] == ',' &&
             ras_filetype_from_suffix(ent->d_name) >= 0) {
-            
-            snprintf(out, out_sz, "%s/%s", dir_path, ent->d_name);
-            closedir(d);
-            return 0;
-        }
-        
-        // Also check for Windows-style extensions (base name + .ext)
-        // Match if: entry starts with filename, has a dot after it, and has an extension
-        if (ent_len > filename_len + 1 &&
-            strncasecmp(ent->d_name, filename, filename_len) == 0 &&
-            ent->d_name[filename_len] == '.') {
             
             snprintf(out, out_sz, "%s/%s", dir_path, ent->d_name);
             closedir(d);
@@ -256,7 +281,28 @@ static void send_d_pkt(ras_net *net, const unsigned char *rid, const void *data,
     ras_net_sendto(net->rpc, &pkt, 4 + dlen, addr, port);
 }
 
-__attribute__((unused)) static void send_s_pkt(ras_net *net, const unsigned char *rid, const void *data, size_t dlen, const char *addr, unsigned short port) {
+static void send_d_pkt_with_offset(ras_net *net, const unsigned char *rid, uint32_t offset, const void *data, size_t dlen, const char *addr, unsigned short port) {
+    if (dlen > 0)
+        ras_log(RAS_LOG_DEBUG, "RREAD: SEND PAYLOAD RID=%02x%02x%02x Offset=%u Len=%zu", rid[0], rid[1], rid[2], offset, dlen);
+    else
+        ras_log(RAS_LOG_DEBUG, "RREAD: SEND STATUS RID=%02x%02x%02x Offset=%u", rid[0], rid[1], rid[2], offset);
+
+    unsigned char header[8];
+    header[0] = 'D';
+    header[1] = rid[0];
+    header[2] = rid[1];
+    header[3] = rid[2];
+    write_u32(header + 4, offset);
+    
+    struct { unsigned char h[8]; unsigned char p[2048]; } pkt;
+    if (dlen > sizeof(pkt.p)) dlen = sizeof(pkt.p);
+    memcpy(pkt.h, header, 8);
+    if (data && dlen) memcpy(pkt.p, data, dlen);
+    
+    ras_net_sendto(net->rpc, &pkt, 8 + dlen, addr, port);
+}
+
+static void send_s_pkt(ras_net *net, const unsigned char *rid, const void *data, size_t dlen, const char *addr, unsigned short port) {
     unsigned char header[4] = { 'S', rid[0], rid[1], rid[2] };
     struct { unsigned char h[4]; unsigned char p[2048]; } pkt;
     if (dlen > sizeof(pkt.p)) dlen = sizeof(pkt.p);
@@ -485,12 +531,22 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr, unsig
         }
         uint32_t code = read_u32(buf + 4);
         uint32_t handle = read_u32(buf + 8);
-        const char *path = (len > 12) ? (const char *)(buf + 12) : "";
+        
+        // Only some commands have a path at position 12. Handle-based commands
+        // like RCLOSE (0x0a), RREAD (0x0b), RWRITE (0x0c), RSETINFO (0x10), etc.
+        // have binary data there instead (offsets, lengths, load/exec addresses).
+        // Path-based commands: 0x00-0x09, 0x16
+        int has_path = (code <= 0x09 || code == 0x16);
+        const char *path = (has_path && len > 12) ? (const char *)(buf + 12) : "";
 
-        ras_log(RAS_LOG_PROTOCOL, "A-cmd code=%u handle=%u path='%s'", code, handle, path);
+        if (has_path) {
+            ras_log(RAS_LOG_PROTOCOL, "A-cmd code=%u handle=%u path='%s'", code, handle, path);
+        } else {
+            ras_log(RAS_LOG_PROTOCOL, "A-cmd code=%u handle=%u (handle-based)", code, handle);
+        }
 
-        // Check authentication for path-based operations
-        if (path[0] && !check_share_auth(cfg, auth, addr, path)) {
+        // Check authentication for path-based operations only
+        if (has_path && path[0] && !check_share_auth(cfg, auth, addr, path)) {
             send_err_pkt(net, rid, EACCES, addr, port);
             return 0;
         }
@@ -742,6 +798,12 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr, unsig
             if (new_attrs & RAS_ATTR_W) mode |= 0200;
             if (new_attrs & RAS_ATTR_r) mode |= 0044;
             if (new_attrs & RAS_ATTR_w) mode |= 0022;
+            // Directories need execute bit to be accessible, and owner always needs access
+            if (S_ISDIR(st.st_mode)) {
+                mode |= 0700;  // Owner always gets rwx for directories
+                if (mode & 0040) mode |= 0010;  // group read -> group exec
+                if (mode & 0004) mode |= 0001;  // other read -> other exec
+            }
             chmod(actual_path, mode);
             unsigned char reply[20];
             build_filedesc(reply, &st, S_ISDIR(st.st_mode) ? RAS_FILETYPE_DIR : ras_filetype_from_ext(actual_path, cfg));
@@ -804,73 +866,70 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr, unsig
             break;
         }
 
-        case 0x0b: // RREAD - read file data (uses S+B format like B command)
+        case 0x0b: // RREAD
         {
-            // Format: cmd(1) + rid(3) + code(4) + handle(4) + offset(4) + length(4) = 20 bytes
             if (len < 20) { send_err_pkt(net, rid, EINVAL, addr, port); break; }
             int hid = (int)handle;
             uint32_t offset = read_u32(buf + 12);
             uint32_t rlen = read_u32(buf + 16);
             
-            ras_log(RAS_LOG_DEBUG, "RREAD: handle=%d offset=%u len=%u", hid, offset, rlen);
-            
+            ras_log(RAS_LOG_DEBUG, "A-cmd RREAD: handle=%d offset=%u len=%u", hid, offset, rlen);
+
             ras_handle *h = NULL;
-            if (ras_handles_get(handles, hid, &h) != 0 || !h) {
-                ras_log(RAS_LOG_DEBUG, "RREAD: handle %d not found", hid);
-                send_err_pkt(net, rid, EBADF, addr, port);
-                break;
-            }
-            if (h->fd < 0) {
-                ras_log(RAS_LOG_DEBUG, "RREAD: handle %d has no fd", hid);
+            if (ras_handles_get(handles, hid, &h) != 0 || !h || h->fd < 0) {
                 send_err_pkt(net, rid, EBADF, addr, port);
                 break;
             }
             
-            if (lseek(h->fd, (off_t)offset, SEEK_SET) < 0) {
-                ras_log(RAS_LOG_DEBUG, "RREAD: lseek failed errno=%d", errno);
+            // Allocate pending read
+            pending_read_t *pr = alloc_pending_read();
+            if (!pr) {
+                send_err_pkt(net, rid, EMFILE, addr, port);
+                break;
+            }
+            
+            pr->handle_id = hid;
+            pr->start_pos = offset;
+            pr->current_pos = offset;
+            pr->end_pos = offset + rlen;
+            pr->state = RAS_READ_STATE_WAIT_DATA_ACK;
+            pr->rid[0] = rid[0];
+            pr->rid[1] = rid[1];
+            pr->rid[2] = rid[2];
+            strncpy(pr->addr, addr, sizeof(pr->addr) - 1);
+            pr->addr[sizeof(pr->addr) - 1] = '\0';
+            pr->port = port;
+            
+            // Send first chunk
+            uint32_t amount = (rlen < READ_CHUNK_SIZE) ? rlen : READ_CHUNK_SIZE;
+            
+            if (lseek(h->fd, (off_t)pr->current_pos, SEEK_SET) < 0) {
+                free_pending_read(pr);
                 send_err_pkt(net, rid, errno, addr, port);
                 break;
             }
             
-            // Limit read size
-            if (rlen > 16384) rlen = 16384;
-            unsigned char data[16384];
-            ssize_t n = read(h->fd, data, rlen);
+            unsigned char data[READ_CHUNK_SIZE];
+            ssize_t n = read(h->fd, data, amount);
             if (n < 0) {
-                ras_log(RAS_LOG_DEBUG, "RREAD: read failed errno=%d", errno);
+                free_pending_read(pr);
                 send_err_pkt(net, rid, errno, addr, port);
                 break;
             }
             
-            uint32_t new_pos = offset + (uint32_t)n;
-            h->seq_ptr = new_pos;
-            ras_log(RAS_LOG_DEBUG, "RREAD: read %zd bytes at offset %u, new_pos=%u", n, offset, new_pos);
+            // Send D packet with offset relative to start (should be 0 for first chunk)
+            send_d_pkt_with_offset(net, rid, pr->current_pos - pr->start_pos, data, (size_t)n, addr, port);
             
-            // Build S+B combined response (same format as B command RREAD)
-            // Header: S + rid + length(4) + trailer_len(4)
-            // Data
-            // Trailer: B + rid + length(4) + new_pos(4)
-            size_t pkt_len = 4 + 4 + 4 + (size_t)n + 4 + 4 + 4;
-            unsigned char *pkt = malloc(pkt_len);
-            if (!pkt) { send_err_pkt(net, rid, ENOMEM, addr, port); break; }
+            pr->current_pos += (uint32_t)n;
             
-            size_t off = 0;
-            pkt[off++] = 'S';
-            pkt[off++] = rid[0];
-            pkt[off++] = rid[1];
-            pkt[off++] = rid[2];
-            write_u32(pkt + off, (uint32_t)n); off += 4;
-            write_u32(pkt + off, 0x0c); off += 4;  // trailer_len indicator
-            memcpy(pkt + off, data, (size_t)n); off += (size_t)n;
-            pkt[off++] = 'B';
-            pkt[off++] = rid[0];
-            pkt[off++] = rid[1];
-            pkt[off++] = rid[2];
-            write_u32(pkt + off, (uint32_t)n); off += 4;
-            write_u32(pkt + off, new_pos); off += 4;
-            
-            ras_net_sendto(net->rpc, pkt, off, addr, port);
-            free(pkt);
+            // If completed immediately (small file), send R packet too
+            if (pr->current_pos >= pr->end_pos) {
+                 unsigned char reply[8];
+                 write_u32(reply, pr->end_pos - pr->start_pos);
+                 write_u32(reply + 4, pr->end_pos);
+                 send_r_pkt(net, rid, reply, sizeof(reply), addr, port);
+                 free_pending_read(pr);
+            }
             break;
         }
 
@@ -1282,9 +1341,19 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr, unsig
             }
             if (!h || h->fd < 0) { send_err_pkt(net, rid, EBADF, addr, port); break; }
             
-            if (lseek(h->fd, (off_t)pos, SEEK_SET) < 0) {
-                send_err_pkt(net, rid, errno, addr, port);
-                break;
+            if (pos == 0xFFFFFFFF) {
+                // Sequential read: get current position
+                off_t current = lseek(h->fd, 0, SEEK_CUR);
+                if (current < 0) {
+                     send_err_pkt(net, rid, errno, addr, port);
+                     break;
+                }
+                pos = (uint32_t)current;
+            } else {
+                if (lseek(h->fd, (off_t)pos, SEEK_SET) < 0) {
+                    send_err_pkt(net, rid, errno, addr, port);
+                    break;
+                }
             }
             
             // Limit read size
@@ -1394,6 +1463,9 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr, unsig
             if (len < 20) { send_err_pkt(net, rid, EINVAL, addr, port); break; }
             unsigned int off = read_u32(buf + 12);
             unsigned int rlen = read_u32(buf + 16);
+            
+            ras_log(RAS_LOG_DEBUG, "A-cmd RREAD: handle=%d offset=%u len=%u", hid, off, rlen);
+
             ras_handle *h = NULL;
             for (size_t i = 0; i < handles->count; ++i) {
                 if (handles->items[i].id == hid) {
@@ -1402,13 +1474,56 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr, unsig
                 }
             }
             if (!h || h->fd < 0) { send_err_pkt(net, rid, EBADF, addr, port); break; }
-            if (lseek(h->fd, (off_t)off, SEEK_SET) < 0) { send_err_pkt(net, rid, errno, addr, port); break; }
-            unsigned char data[2048];
-            if (rlen > sizeof(data)) rlen = sizeof(data);
-            ssize_t n = read(h->fd, data, rlen);
-            if (n < 0) { send_err_pkt(net, rid, errno, addr, port); break; }
-            h->seq_ptr = off + (uint32_t)n;
-            send_d_pkt(net, rid, data, (size_t)n, addr, port);
+            
+            // Allocate pending read
+            pending_read_t *pr = alloc_pending_read();
+            if (!pr) {
+                send_err_pkt(net, rid, EMFILE, addr, port);
+                break;
+            }
+            
+            pr->handle_id = hid;
+            pr->start_pos = off;
+            pr->current_pos = off;
+            pr->end_pos = off + rlen;
+            pr->state = RAS_READ_STATE_WAIT_DATA_ACK;
+            pr->rid[0] = rid[0];
+            pr->rid[1] = rid[1];
+            pr->rid[2] = rid[2];
+            strncpy(pr->addr, addr, sizeof(pr->addr) - 1);
+            pr->addr[sizeof(pr->addr) - 1] = '\0';
+            pr->port = port;
+            
+            // Send first chunk
+            uint32_t amount = (rlen < READ_CHUNK_SIZE) ? rlen : READ_CHUNK_SIZE;
+            
+            if (lseek(h->fd, (off_t)pr->current_pos, SEEK_SET) < 0) {
+                free_pending_read(pr);
+                send_err_pkt(net, rid, errno, addr, port);
+                break;
+            }
+            
+            unsigned char data[READ_CHUNK_SIZE];
+            ssize_t n = read(h->fd, data, amount);
+            if (n < 0) {
+                free_pending_read(pr);
+                send_err_pkt(net, rid, errno, addr, port);
+                break;
+            }
+            
+            // Send D packet with offset relative to start (should be 0 for first chunk)
+            send_d_pkt_with_offset(net, rid, pr->current_pos - pr->start_pos, data, (size_t)n, addr, port);
+            
+            pr->current_pos += (uint32_t)n;
+            
+            // If completed immediately (small file), send R packet too
+            if (pr->current_pos >= pr->end_pos) {
+                 unsigned char reply[8];
+                 write_u32(reply, pr->end_pos - pr->start_pos);
+                 write_u32(reply + 4, pr->end_pos);
+                 send_r_pkt(net, rid, reply, sizeof(reply), addr, port);
+                 free_pending_read(pr);
+            }
             break;
         }
 
@@ -1698,6 +1813,20 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr, unsig
             return 0;
         }
         
+        // Check for sequential write
+        uint32_t expected_rel = pw->current_pos - pw->start_pos;
+        if (rel_pos != expected_rel) {
+            ras_log(RAS_LOG_ERROR, "d-pkt: Non-sequential write. rel_pos=%u expected=%u", rel_pos, expected_rel);
+            
+            // If gap detected, re-request the expected chunk immediately
+            if (rel_pos > expected_rel) {
+                uint32_t remaining = pw->end_pos - pw->current_pos;
+                uint32_t chunk = (remaining < WRITE_CHUNK_SIZE) ? remaining : WRITE_CHUNK_SIZE;
+                send_w_pkt(net, pw->rid, expected_rel, expected_rel + chunk, pw->addr, pw->port);
+            }
+            return 0;
+        }
+
         // Calculate absolute position and write data
         uint32_t abs_pos = pw->start_pos + rel_pos;
         if (lseek(h->fd, (off_t)abs_pos, SEEK_SET) < 0) {
@@ -1738,8 +1867,115 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr, unsig
         return 0;
     }
 
+    // 'r' command - acknowledgement packet from client for RREAD
+    if (cmd == 'r') {
+        return ras_rpc_handle_r(buf, len, addr, port, net, handles);
+    }
+
     // Unknown command
     ras_log(RAS_LOG_DEBUG, "Unsupported cmd '%c' (%u)", cmd, cmd);
     send_err_pkt(net, rid, ENOSYS, addr, port);
+    return 0;
+}
+
+// Handle 'r' packet (acknowledgement from client for RREAD data)
+int ras_rpc_handle_r(const unsigned char *buf, size_t len, const char *addr, unsigned short port,
+                     ras_net *net, ras_handle_table *handles) {
+    // Format: r + rid(3) + ...
+    if (len < 4) return 0;
+    
+    unsigned char rid[3] = { buf[1], buf[2], buf[3] };
+    // Low level protocol logging only
+    // ras_log(RAS_LOG_DEBUG, "r-pkt from %s:%u", addr, port);
+    
+    pending_read_t *pr = find_pending_read(rid);
+    if (!pr) {
+        // Can happen if we resent R or client is delayed
+        return 0;
+    }
+    
+    ras_handle *h = NULL;
+    if (ras_handles_get(handles, pr->handle_id, &h) != 0 || !h || h->fd < 0) {
+        ras_log(RAS_LOG_DEBUG, "r-pkt: handle %d invalid", pr->handle_id);
+        free_pending_read(pr);
+        return 0;
+    }
+
+    if (pr->state == RAS_READ_STATE_WAIT_DATA_ACK) {
+        // We received ACK for the data packet.
+        ras_log(RAS_LOG_DEBUG, "RREAD: Done Data %u/%u. Sending Status.", pr->current_pos - pr->start_pos, pr->end_pos - pr->start_pos);
+        
+        // Send Status Packet (D header with current offset, no data)
+        send_d_pkt_with_offset(net, rid, pr->current_pos - pr->start_pos, NULL, 0, addr, port);
+        
+        if (pr->current_pos >= pr->end_pos) {
+            ras_log(RAS_LOG_DEBUG, "RREAD: Transfer Complete. Sending R.");
+            // Transfer complete
+            unsigned char reply[8];
+            write_u32(reply, pr->end_pos - pr->start_pos);
+            write_u32(reply + 4, pr->end_pos);
+            send_r_pkt(net, rid, reply, sizeof(reply), addr, port);
+            free_pending_read(pr);
+        } else {
+            // Wait for client to request next chunk
+           pr->state = RAS_READ_STATE_WAIT_STATUS_ACK;
+        }
+    }
+    else if (pr->state == RAS_READ_STATE_WAIT_STATUS_ACK) {
+        // We received ACK for status packet.
+        // Client sends next requested range in this packet.
+        // Format: r + rid + pos(4) + end(4) (relative to start)
+        if (len < 12) {
+            ras_log(RAS_LOG_DEBUG, "r-pkt: short status ack");
+            free_pending_read(pr);
+            return 0;
+        }
+        
+        uint32_t rel_pos = read_u32(buf + 4);
+        uint32_t rel_end = read_u32(buf + 8);
+        
+        ras_log(RAS_LOG_DEBUG, "RREAD: Client Request: RelPos=%u RelEnd=%u", rel_pos, rel_end);
+        
+        uint32_t next_pos = pr->start_pos + rel_pos;
+        uint32_t chunk_end = pr->start_pos + rel_end;
+        
+        // Sanity check
+        if (next_pos >= pr->end_pos) {
+             ras_log(RAS_LOG_DEBUG, "RREAD: Client requested beyond end.");
+             free_pending_read(pr);
+             return 0;
+        }
+        
+        // Update current position to what client asked for
+        pr->current_pos = next_pos;
+        
+        // Determine chunk size
+        uint32_t amount = chunk_end - next_pos;
+        if (amount > READ_CHUNK_SIZE) amount = READ_CHUNK_SIZE;
+        // Also cap at total file end
+        if (pr->current_pos + amount > pr->end_pos) amount = pr->end_pos - pr->current_pos;
+        
+        ras_log(RAS_LOG_DEBUG, "RREAD: Sending Data: Offset=%u Len=%u", pr->current_pos - pr->start_pos, amount);
+        
+        // Read next chunk
+        if (lseek(h->fd, (off_t)pr->current_pos, SEEK_SET) < 0) {
+            free_pending_read(pr);
+            return 0;
+        }
+        
+        unsigned char data[READ_CHUNK_SIZE];
+        ssize_t n = read(h->fd, data, amount);
+        if (n < 0) {
+             free_pending_read(pr);
+             return 0;
+        }
+        
+        // Send Data Packet
+        send_d_pkt_with_offset(net, rid, pr->current_pos - pr->start_pos, data, (size_t)n, addr, port);
+        
+        pr->current_pos += (uint32_t)n;
+        pr->state = RAS_READ_STATE_WAIT_DATA_ACK;
+    }
+    
     return 0;
 }
