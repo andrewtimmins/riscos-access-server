@@ -1,0 +1,12 @@
+#!/bin/bash
+set -e
+
+case "$1" in
+    remove|purge)
+        # Stop and disable service
+        systemctl stop access.service || true
+        systemctl disable access.service || true
+        ;;
+esac
+
+exit 0

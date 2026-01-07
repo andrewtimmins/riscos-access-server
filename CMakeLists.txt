@@ -27,3 +27,48 @@ add_subdirectory(src)
 if(RAS_BUILD_ADMIN)
     add_subdirectory(admin)
 endif()
+
+# Install sample config
+install(FILES access.conf.sample DESTINATION share/riscos-access-server)
+
+# Install systemd service file (Linux only)
+if(NOT WIN32)
+    install(FILES debian/access.service DESTINATION lib/systemd/system)
+endif()
+
+# CPack configuration for Debian packages
+set(CPACK_PACKAGE_NAME "riscos-access-server")
+set(CPACK_PACKAGE_VENDOR "Andrew Timmins")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "RISC OS Access/ShareFS Server")
+set(CPACK_PACKAGE_DESCRIPTION "A server that allows modern computers to share files with RISC OS machines using the native ShareFS protocol. Includes file operations, directory browsing, Freeway broadcasts, and Access+ authentication.")
+set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
+set(CPACK_PACKAGE_VERSION_MAJOR ${PROJECT_VERSION_MAJOR})
+set(CPACK_PACKAGE_VERSION_MINOR ${PROJECT_VERSION_MINOR})
+set(CPACK_PACKAGE_VERSION_PATCH ${PROJECT_VERSION_PATCH})
+set(CPACK_PACKAGE_CONTACT "andrew@example.com")
+set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/andrewtimmins/riscos-access-server")
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")
+
+# Debian-specific settings
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Andrew Timmins")
+set(CPACK_DEBIAN_PACKAGE_SECTION "net")
+set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+
+# Dependencies - systemd for service management
+if(RAS_BUILD_ADMIN)
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS "systemd, libwxgtk3.2-1")
+else()
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS "systemd")
+endif()
+
+# Debian maintainer scripts for service management
+set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA 
+    "${CMAKE_SOURCE_DIR}/debian/postinst"
+    "${CMAKE_SOURCE_DIR}/debian/prerm"
+    "${CMAKE_SOURCE_DIR}/debian/postrm"
+)
+
+# Generate package with standard naming
+set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+
+include(CPack)

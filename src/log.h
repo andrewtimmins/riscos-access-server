@@ -8,12 +8,20 @@
 #include <stdio.h>
 
 typedef enum {
-    RAS_LOG_NONE = 0,
-    RAS_LOG_ERROR,
-    RAS_LOG_INFO,
-    RAS_LOG_DEBUG,
-    RAS_LOG_PROTOCOL
+  RAS_LOG_NONE = 0,
+  RAS_LOG_ERROR,
+  RAS_LOG_INFO,
+  RAS_LOG_DEBUG,
+  RAS_LOG_PROTOCOL
 } ras_log_level;
+
+// Initialize logging - opens log file
+// Linux: /var/log/access/access.log
+// Windows: ./access.log
+int ras_log_init(void);
+
+// Shutdown logging - closes log file
+void ras_log_shutdown(void);
 
 void ras_log_set_level(ras_log_level level);
 void ras_log_set_stream(FILE *stream);

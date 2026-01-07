@@ -45,29 +45,30 @@ riscos-access-server/
 - **Handle limit**: Dynamic allocation (no artificial 256 limit)
 - **Configuration**: INI-style `access.conf` file
 - **Cross-compilation**: Full Windows support via MinGW-w64
+- **System Integration**: Debian package uses `systemd` and auto-configures `ufw`/`firewalld` in postinst.
 
 ## Building
-
-### Linux (Native)
-
-```bash
-cmake -S . -B build
-cmake --build build -j$(nproc)
-# Produces: build/src/access, build/admin/access-admin
-```
-
-### Windows (Cross-Compile)
-
-```bash
-# Server only
-cmake -S . -B build-win -DCMAKE_TOOLCHAIN_FILE=mingw-w64-x86_64.cmake -DRAS_BUILD_ADMIN=OFF
-cmake --build build-win
-
-# Server + GUI (requires wxWidgets built for MinGW, see README.md)
-cmake -S . -B build-win -DCMAKE_TOOLCHAIN_FILE=mingw-w64-x86_64.cmake \
-    -DwxWidgets_CONFIG_EXECUTABLE=$HOME/wxWidgets-mingw/install/bin/wx-config
-cmake --build build-win
-```
+ 
+### Automated Building (Recommended)
+ 
+The project now uses helper scripts for all build tasks:
+ 
+- **setup-build-env.sh**: Installs dependencies (Debian/Ubuntu) and MinGW toolchain.
+- **build.sh**: Main build script.
+ 
+#### Build Options (`./build.sh [option]`)
+- `--all-full`: Full build (Linux, Windows Server + Admin GUI, Deb package, Win Zip).
+- `--deb`: Create Debian package (`.deb`).
+- `--zip`: Create Windows Zip (`riscos-access-server_X.Y.Z.zip`).
+- `--windows-full`: Windows Server + Admin GUI.
+ 
+#### Output Structure
+- `releases/linux/`: Linux binaries and `.deb`
+- `releases/windows/`: Windows `access.exe`, `access-admin.exe`, `access.conf`, and `.zip`
+ 
+### Manual CMake (Legacy)
+ 
+See `build.sh` source for exact CMake commands used.
 
 ## Admin GUI Architecture
 
@@ -78,8 +79,12 @@ The Admin GUI uses wxWidgets with a tabbed notebook interface:
 - **ServerPanel**: Log level, broadcast interval, Access+ toggle
 - **SharesPanel**: CRUD for shares with attribute checkboxes
 - **PrintersPanel**: CRUD for printers with spool settings
-- **MimePanel**: Extension-to-filetype mappings
+- **MimePanel**: Extension-to-filetype mappings (Enforces 3-digit Hex, Uppercase)
 - **ControlPanel**: Start/stop/restart buttons, live log viewer
+ 
+### Firewall Configuration
+- **Linux**: `scripts/configure-firewall-linux.sh` (or auto-run by .deb postinst)
+- **Windows**: `scripts/configure-firewall-windows.bat` (Admin required)
 
 ### Key GUI Patterns
 
@@ -199,7 +204,7 @@ static int password_to_pin(char *buf) {
 ```ini
 [server]
 log_level = info
-broadcast_interval = 60
+broadcast_interval = 3
 access_plus = true
 bind_ip = 192.168.1.100  # Required for Windows WiFi
 

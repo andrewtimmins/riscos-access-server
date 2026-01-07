@@ -1,0 +1,15 @@
+#!/bin/bash
+set -e
+
+case "$1" in
+    remove)
+        systemctl daemon-reload
+        ;;
+    purge)
+        # Remove config file on purge
+        rm -f /etc/access.conf
+        systemctl daemon-reload
+        ;;
+esac
+
+exit 0

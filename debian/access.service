@@ -1,0 +1,20 @@
+[Unit]
+Description=RISC OS Access/ShareFS Server
+Documentation=https://github.com/andrewtimmins/riscos-access-server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/access
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/log
+
+[Install]
+WantedBy=multi-user.target

@@ -30,3 +30,5 @@ else()
     find_package(Threads REQUIRED)
     target_link_libraries(access Threads::Threads)
 endif()
+
+install(TARGETS access RUNTIME DESTINATION bin)

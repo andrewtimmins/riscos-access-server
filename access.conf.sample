@@ -1,5 +1,4 @@
 # RISC OS Access/ShareFS Server - Sample Configuration
-# Copy this file to access.conf and customize
 
 [server]
 # Logging: none, error, info, debug, protocol
@@ -8,17 +7,18 @@ log_level = info
 # Bind to specific IP address (default: all interfaces)
 # bind_ip = 192.168.0.2
 
-# Broadcast interval in seconds (default: 30)
-broadcast_interval = 30
+# Broadcast interval in seconds (default: 3)
+broadcast_interval = 3
 
 # Enable Access+ authentication (port 32771)
 access_plus = true
 
-# Example shares - uncomment and customize
+# Default public share 
+# Files placed here will be visible to all RISC OS clients
+[share:Public]
+path = /srv/riscos-share/Public
 
-#[share:Public]
-#path = /home/user/riscos-share
-#attributes = readonly
+# Additional share examples - uncomment and customize
 
 #[share:Documents]
 #path = /home/user/documents
@@ -38,10 +38,48 @@ access_plus = true
 #poll_interval = 5
 #command = lpr -P laserjet %f
 
-# MIME type mappings - override default extension->filetype mappings
+# MIME type mappings - map file extensions to RISC OS filetypes
 [mimemap]
-# Format: extension = hex_filetype (without 0x prefix)
-# Uncomment to override defaults:
-# txt = FFF
-# pdf = ADF
-# bas = FFB
+# Text and documents
+txt = FFF
+text = FFF
+pdf = ADF
+html = FAF
+htm = FAF
+css = F79
+xml = F80
+
+# Images
+jpg = C85
+jpeg = C85
+png = B60
+gif = 695
+bmp = 69C
+tiff = FF0
+tif = FF0
+svg = AAD
+
+# Audio/Video
+wav = FB1
+mp3 = 1AD
+ogg = 1AD
+mp4 = BF8
+avi = FB2
+
+# Archives
+zip = A91
+gz = F89
+tar = C46
+
+# Programming
+c = FFF
+h = FFF
+cpp = FFF
+py = FFF
+js = FFF
+json = FFF
+bas = FFB
+
+# Data
+csv = DFE
+dat = FFD

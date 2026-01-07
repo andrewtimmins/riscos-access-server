@@ -1,0 +1,38 @@
+#!/bin/bash
+set -e
+
+case "$1" in
+    configure)
+        # Create default config if it doesn't exist
+        if [ ! -f /etc/access.conf ]; then
+            cp /usr/share/riscos-access-server/access.conf.sample /etc/access.conf
+            chmod 644 /etc/access.conf
+        fi
+        
+        # Create log directory
+        mkdir -p /var/log/access
+        chmod 755 /var/log/access
+        
+        mkdir -p /srv/riscos-share/Public
+        chmod 1777 /srv/riscos-share/Public
+        
+        # Configure Firewall (Best effort)
+        if command -v ufw >/dev/null; then
+            ufw allow 32770/udp >/dev/null 2>&1 || true
+            ufw allow 32771/udp >/dev/null 2>&1 || true
+            ufw allow 49171/udp >/dev/null 2>&1 || true
+        elif command -v firewall-cmd >/dev/null; then
+            firewall-cmd --permanent --add-port=32770/udp >/dev/null 2>&1 || true
+            firewall-cmd --permanent --add-port=32771/udp >/dev/null 2>&1 || true
+            firewall-cmd --permanent --add-port=49171/udp >/dev/null 2>&1 || true
+            firewall-cmd --reload >/dev/null 2>&1 || true
+        fi
+        
+        # Reload systemd and enable service
+        systemctl daemon-reload
+        systemctl enable access.service
+        systemctl start access.service || true
+        ;;
+esac
+
+exit 0
