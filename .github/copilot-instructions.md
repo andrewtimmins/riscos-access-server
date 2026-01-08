@@ -166,7 +166,7 @@ Must enforce **strict sequentiality** of incoming `d` packets. If a gap is detec
 Returns the current sequential file pointer using `lseek(fd, 0, SEEK_CUR)`. Important for execution of Obey/Run files.
 
 **Text Files:**
-The server treats all files as binary. Text file translation (LF vs CR) is **NOT** performed. Obey files (`&FEB`) must have CR line endings to execute on RISC OS 3.70+.
+The server treats all files as binary. Text file translation (LF vs CR) is **NOT** performed. Obey files (`&FEB`) should use LF line endings (though RISC OS accepts any control character except tab as a line terminator).
 ```
 
 ## RISC OS Date/Time Format
