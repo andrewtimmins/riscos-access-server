@@ -65,10 +65,12 @@ for arg in "$@"; do
             echo "  --deb, -d             Create .deb package"
             echo "  --zip, -z             Create .zip archive (Windows only)"
             echo "  --all, -a             Build everything (Linux + Windows Server + deb)"
-            echo "  --all-full            Build everything (Linux + Windows Server & Admin + deb + zip)"
+            echo "  --all-full            Build everything (Linux + Windows Server & Admin + deb + zip + installer)"
             echo "  --windows-wxwidgets   Build wxWidgets for MinGW (one-time setup)"
             echo "  --clean, -c           Remove all build directories"
             echo "  --help, -h            Show this help message"
+            echo ""
+            echo "Note: Windows installer requires NSIS (sudo apt install nsis)"
             exit 0
             ;;
     esac
@@ -219,12 +221,14 @@ if [ "$BUILD_WINDOWS" = true ]; then
     
     # Copy Windows binaries to releases
     cp build-win/src/access.exe releases/windows/
+    cp build-win/src/access-service.exe releases/windows/
     if [ -f "build-win/admin/access-admin.exe" ]; then
         cp build-win/admin/access-admin.exe releases/windows/
     fi
     
     echo "✓ Windows build complete"
     echo "  Server: releases/windows/access.exe"
+    echo "  Service: releases/windows/access-service.exe"
     if [ -f "releases/windows/access-admin.exe" ]; then
         echo "  Admin:  releases/windows/access-admin.exe"
     fi
@@ -234,7 +238,7 @@ fi
 
 # Copy config to releases
 cp access.conf.sample releases/linux/access.conf
-cp access.conf.sample releases/windows/access.conf
+cp access.conf.sample-windows releases/windows/access.conf
 
 # Copy firewall scripts
 if [ -f "scripts/configure-firewall-linux.sh" ]; then
@@ -273,6 +277,35 @@ if [ "$BUILD_ZIP" = true ]; then
         fi
     else
         echo "Warning: No Windows binaries found to zip. Did you forget --windows?"
+    fi
+fi
+
+# Create Windows NSIS Installer
+if [ "$BUILD_WINDOWS" = true ] && [ "$BUILD_ZIP" = true ]; then
+    if [ -d "releases/windows" ] && [ "$(ls -A releases/windows)" ]; then
+        echo ""
+        echo "Creating Windows NSIS installer..."
+        
+        # Check if makensis is installed
+        if ! command -v makensis &> /dev/null; then
+            echo "Warning: 'makensis' command not found."
+            echo "Install NSIS to create Windows installers (e.g., sudo apt install nsis)."
+        else
+            # Copy necessary files to build directory for NSIS
+            cp LICENSE releases/windows/ 2>/dev/null || echo "Note: LICENSE file not found"
+            cp README.md releases/windows/ 2>/dev/null || echo "Note: README.md file not found"
+            
+            # Build the installer
+            makensis -NOCD installer.nsi > /dev/null
+            
+            if [ -f "riscos-access-server_0.1.0-setup.exe" ]; then
+                mv riscos-access-server_0.1.0-setup.exe releases/windows/
+                echo "✓ Windows installer created"
+                echo "  Installer: releases/windows/riscos-access-server_0.1.0-setup.exe"
+            else
+                echo "Warning: NSIS installer creation failed"
+            fi
+        fi
     fi
 fi
 

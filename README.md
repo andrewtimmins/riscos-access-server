@@ -130,16 +130,51 @@ access-admin
 ```
 Configuration is at `/etc/access.conf`.
 
+Non-root management (Debian/Ubuntu package):
+- Add your user to the `access-admin` group: `sudo usermod -aG access-admin $USER` then re-login.
+- `/etc/access.conf` is owned by `root:access-admin` with mode `664`, so group members can edit it without sudo.
+- A polkit rule allows the `access-admin` group to start/stop/restart `access.service` without a password (e.g., `systemctl restart access`).
+
+### Windows (Installer)
+
+1. Run the Windows installer (`riscos-access-server_*.exe`).
+2. Everything is installed to `C:\AccessServer`:
+   - Binaries: `access.exe`, `access-admin.exe`, `access-service.exe`
+   - Config: `access.conf`
+   - Shares: `C:\AccessServer\Shares\Public` (writeable for local users out of the box)
+3. Firewall rules for UDP 32770, 32771, 49171 are added during install.
+4. Start/stop/restart the server via the Admin GUI (controls the Windows service) or run `access-service.exe start|stop`.
+
 ### Windows (Zip Archive)
 
-Extract the zip archive to a folder of your choice.
+Extract the zip archive anywhere (no installer, no firewall rules configured automatically).
 
 - **Run Server:** Double-click `access.exe` (or run from CMD: `access.exe access.conf`).
 - **Run Admin GUI:** Double-click `access-admin.exe` (if included).
 
-Configuration is `access.conf` in the same folder.
-
 > **Firewall Warning:** Ensure Windows Firewall allows UDP ports 32770, 32771, and 49171.
+
+#### Windows Service Installation
+
+For automatic startup and running in the background, you can install the server as a Windows service:
+
+1. Open PowerShell or Command Prompt **as Administrator**
+2. Navigate to the installation directory
+3. Run: `access-service.exe install`
+4. The service is configured to start automatically on boot
+5. To start immediately: `access-service.exe start`
+   - Or use the Services console (`services.msc`)
+
+**Configuration file location**: `C:\AccessServer\access.conf`  
+(Falls back to `access.conf` in the executable directory if the above doesn't exist)
+
+**Managing the service:**
+- **Start**: `access-service.exe start` or use Services console
+- **Stop**: `access-service.exe stop`
+- **Check status**: `sc query RiscOsAccessServer`
+- **Uninstall**: `access-service.exe stop` (if running), then `access-service.exe uninstall`
+
+**Admin GUI integration**: The Admin GUI automatically detects if the Windows service is installed and provides start/stop/restart controls for it.
 
 ### Using the Admin GUI
 

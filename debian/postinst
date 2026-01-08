@@ -8,7 +8,27 @@ case "$1" in
             cp /usr/share/riscos-access-server/access.conf.sample /etc/access.conf
             chmod 644 /etc/access.conf
         fi
-        
+
+        # Create admin group for config edits and service control
+        if ! getent group access-admin >/dev/null; then
+            addgroup --system access-admin
+        fi
+        chown root:access-admin /etc/access.conf
+        chmod 664 /etc/access.conf
+
+        # Allow access-admin group to manage the service without sudo
+        install -d -m 755 /etc/polkit-1/rules.d
+        cat >/etc/polkit-1/rules.d/90-access-server.rules <<'EOF'
+polkit.addRule(function(action, subject) {
+  if (action.id == "org.freedesktop.systemd1.manage-units" &&
+      action.lookup("unit") == "access.service" &&
+      subject.isInGroup("access-admin")) {
+    return polkit.Result.YES;
+  }
+});
+EOF
+        chmod 644 /etc/polkit-1/rules.d/90-access-server.rules
+
         # Create log directory
         mkdir -p /var/log/access
         chmod 755 /var/log/access

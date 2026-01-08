@@ -8,6 +8,7 @@ case "$1" in
     purge)
         # Remove config file on purge
         rm -f /etc/access.conf
+        rm -f /etc/polkit-1/rules.d/90-access-server.rules
         systemctl daemon-reload
         ;;
 esac

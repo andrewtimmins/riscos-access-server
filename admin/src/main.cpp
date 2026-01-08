@@ -19,8 +19,10 @@ public:
       frame->LoadConfig(argv[1].ToStdString());
     } else {
 #ifdef __WXMSW__
-      // Windows: check current directory
-      if (wxFileExists("access.conf")) {
+      // Windows: check default install dir, then current directory
+      if (wxFileExists("C:/AccessServer/access.conf")) {
+        frame->LoadConfig("C:/AccessServer/access.conf");
+      } else if (wxFileExists("access.conf")) {
         frame->LoadConfig("access.conf");
       }
 #else

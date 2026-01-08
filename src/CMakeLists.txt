@@ -26,6 +26,19 @@ target_link_libraries(access
 
 if(WIN32)
     target_link_libraries(access ws2_32)
+    
+    # Windows service executable
+    add_executable(access-service
+        service.c
+    )
+    
+    target_link_libraries(access-service
+        ras
+        ws2_32
+        advapi32
+    )
+    
+    install(TARGETS access-service RUNTIME DESTINATION bin)
 else()
     find_package(Threads REQUIRED)
     target_link_libraries(access Threads::Threads)

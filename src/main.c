@@ -22,8 +22,8 @@ int main(int argc, char **argv) {
   } else {
     // Search standard paths in order
 #ifdef _WIN32
-    // Windows: check current directory only
-    static const char *search_paths[] = {"access.conf", NULL};
+  // Windows: check default install dir then current directory
+  static const char *search_paths[] = {"C:\\AccessServer\\access.conf", "access.conf", NULL};
 #else
     // Linux: check system path first, then current directory
     static const char *search_paths[] = {"/etc/access.conf", "access.conf",

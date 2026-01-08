@@ -71,10 +71,18 @@ if(CMAKE_CROSSCOMPILING AND WIN32)
     # Link flags need special handling
     target_link_libraries(access-admin PRIVATE ${WX_LINK_FLAGS})
     
+    # Windows libraries for service status checks and network enumeration
+    target_link_libraries(access-admin PRIVATE advapi32 iphlpapi)
+    
     # Static linking of C/C++ runtime
     target_link_options(access-admin PRIVATE -static -static-libgcc -static-libstdc++)
 else()
     target_link_libraries(access-admin PRIVATE ${wxWidgets_LIBRARIES})
+    
+    # Link with Windows libraries for service status checks and network enumeration
+    if(WIN32)
+        target_link_libraries(access-admin PRIVATE advapi32 iphlpapi)
+    endif()
 endif()
 
 install(TARGETS access-admin RUNTIME DESTINATION bin)

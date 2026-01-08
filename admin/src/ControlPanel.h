@@ -6,7 +6,6 @@
 #include <wx/process.h>
 #include <wx/wx.h>
 
-
 class MainFrame;
 
 class ControlPanel : public wxPanel {
@@ -32,6 +31,12 @@ private:
   void ReadProcessOutput();
   bool CheckSystemdStatus();
   bool IsSystemdActive();
+#ifdef _WIN32
+  bool CheckWindowsServiceStatus();
+  bool IsWindowsServiceInstalled();
+  bool StartWindowsService();
+  bool StopWindowsService();
+#endif
 
   MainFrame *m_frame;
 
@@ -48,6 +53,9 @@ private:
   wxTimer m_timer;
   bool m_running = false;
   bool m_isSystemd = false;
+#ifdef _WIN32
+  bool m_isWindowsService = false;
+#endif
 
   wxDECLARE_EVENT_TABLE();
 };

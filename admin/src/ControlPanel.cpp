@@ -7,6 +7,11 @@
 #include <wx/stdpaths.h>
 #include <wx/txtstrm.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#define ACCESS_SERVICE_NAME TEXT("AccessServer")
+#endif
+
 enum {
   ID_START = wxID_HIGHEST + 400,
   ID_STOP,
@@ -76,7 +81,13 @@ wxBEGIN_EVENT_TABLE(ControlPanel, wxPanel)
 
   configGrid->Add(new wxStaticText(this, wxID_ANY, "Config File:"), 0,
                   wxALIGN_CENTER_VERTICAL);
-  m_configPath = new wxTextCtrl(this, wxID_ANY, "access.conf");
+  m_configPath = new wxTextCtrl(this, wxID_ANY,
+#ifdef __WXMSW__
+                                "C:/AccessServer/access.conf"
+#else
+                                "access.conf"
+#endif
+  );
   configGrid->Add(m_configPath, 1, wxEXPAND);
   wxButton *browseBtn = new wxButton(this, ID_BROWSE_CONFIG, "Browse...");
   configGrid->Add(browseBtn, 0);
@@ -121,6 +132,11 @@ void ControlPanel::RefreshFromConfig() {
 void ControlPanel::UpdateStatus() {
   bool localRunning = (m_running && m_pid > 0);
   bool systemdRunning = CheckSystemdStatus();
+#ifdef _WIN32
+  bool windowsServiceRunning = CheckWindowsServiceStatus();
+#else
+  bool windowsServiceRunning = false;
+#endif
 
   if (localRunning) {
     m_statusLabel->SetLabel("Running (Local)");
@@ -130,6 +146,9 @@ void ControlPanel::UpdateStatus() {
     m_stopBtn->Enable();
     m_restartBtn->Enable();
     m_isSystemd = false;
+#ifdef _WIN32
+    m_isWindowsService = false;
+#endif
   } else if (systemdRunning) {
     m_statusLabel->SetLabel("Running (System Service)");
     m_statusLabel->SetForegroundColour(wxColour(0, 150, 0));
@@ -139,6 +158,21 @@ void ControlPanel::UpdateStatus() {
     m_restartBtn->Enable();
     m_isSystemd = true;
     m_running = true; // Mark as running for logical checks
+#ifdef _WIN32
+    m_isWindowsService = false;
+#endif
+  } else if (windowsServiceRunning) {
+    m_statusLabel->SetLabel("Running (Windows Service)");
+    m_statusLabel->SetForegroundColour(wxColour(0, 150, 0));
+    m_pidLabel->SetLabel("Managed by Service Control Manager");
+    m_startBtn->Disable();
+    m_stopBtn->Enable();
+    m_restartBtn->Enable();
+#ifdef _WIN32
+    m_isWindowsService = true;
+#endif
+    m_running = true; // Mark as running for logical checks
+    m_isSystemd = false;
   } else {
     m_statusLabel->SetLabel("Stopped");
     m_statusLabel->SetForegroundColour(*wxRED);
@@ -148,6 +182,9 @@ void ControlPanel::UpdateStatus() {
     m_restartBtn->Disable();
     m_running = false;
     m_isSystemd = false;
+#ifdef _WIN32
+    m_isWindowsService = false;
+#endif
   }
 }
 
@@ -193,6 +230,110 @@ bool ControlPanel::CheckSystemdStatus() {
 #endif
 }
 
+#ifdef _WIN32
+bool ControlPanel::CheckWindowsServiceStatus() {
+  SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);
+  if (!scm)
+    return false;
+
+  SC_HANDLE service =
+      OpenService(scm, ACCESS_SERVICE_NAME, SERVICE_QUERY_STATUS);
+  if (!service) {
+    CloseServiceHandle(scm);
+    return false;
+  }
+
+  SERVICE_STATUS status;
+  bool isRunning = false;
+  if (QueryServiceStatus(service, &status)) {
+    isRunning = (status.dwCurrentState == SERVICE_RUNNING);
+  }
+
+  CloseServiceHandle(service);
+  CloseServiceHandle(scm);
+  return isRunning;
+}
+
+bool ControlPanel::IsWindowsServiceInstalled() {
+  SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);
+  if (!scm)
+    return false;
+
+  SC_HANDLE service =
+      OpenService(scm, ACCESS_SERVICE_NAME, SERVICE_QUERY_STATUS);
+  bool installed = (service != NULL);
+
+  if (service)
+    CloseServiceHandle(service);
+  CloseServiceHandle(scm);
+  return installed;
+}
+
+bool ControlPanel::StartWindowsService() {
+  SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);
+  if (!scm)
+    return false;
+
+  SC_HANDLE service =
+      OpenService(scm, ACCESS_SERVICE_NAME, SERVICE_START | SERVICE_QUERY_STATUS);
+  if (!service) {
+    CloseServiceHandle(scm);
+    return false;
+  }
+
+  bool success = false;
+  if (StartService(service, 0, NULL) || GetLastError() == ERROR_SERVICE_ALREADY_RUNNING) {
+    // Poll for running state
+    SERVICE_STATUS status;
+    for (int i = 0; i < 50; ++i) { // up to ~10s
+      if (QueryServiceStatus(service, &status) &&
+          status.dwCurrentState == SERVICE_RUNNING) {
+        success = true;
+        break;
+      }
+      Sleep(200);
+    }
+  }
+
+  CloseServiceHandle(service);
+  CloseServiceHandle(scm);
+  return success;
+}
+
+bool ControlPanel::StopWindowsService() {
+  SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);
+  if (!scm)
+    return false;
+
+  SC_HANDLE service =
+      OpenService(scm, ACCESS_SERVICE_NAME, SERVICE_STOP | SERVICE_QUERY_STATUS);
+  if (!service) {
+    CloseServiceHandle(scm);
+    return false;
+  }
+
+  SERVICE_STATUS status;
+  bool success = false;
+
+  if (ControlService(service, SERVICE_CONTROL_STOP, &status) ||
+      GetLastError() == ERROR_SERVICE_NOT_ACTIVE) {
+    // Poll for stopped state
+    for (int i = 0; i < 50; ++i) { // up to ~10s
+      if (QueryServiceStatus(service, &status) &&
+          status.dwCurrentState == SERVICE_STOPPED) {
+        success = true;
+        break;
+      }
+      Sleep(200);
+    }
+  }
+
+  CloseServiceHandle(service);
+  CloseServiceHandle(scm);
+  return success;
+}
+#endif
+
 bool ControlPanel::IsSystemdActive() { return m_isSystemd; }
 
 void ControlPanel::OnStart(wxCommandEvent &event) {
@@ -201,7 +342,21 @@ void ControlPanel::OnStart(wxCommandEvent &event) {
   if (m_running)
     return;
 
-    // Check if systemd is available and try to start that way first on Linux
+    // Check if Windows service is available and try to start that way first
+#ifdef _WIN32
+  if (IsWindowsServiceInstalled()) {
+    AppendLog("[ADMIN] Attempting to start Windows service...\n");
+    if (StartWindowsService()) {
+      AppendLog("[ADMIN] Windows service started.\n");
+      UpdateStatus();
+      return;
+    }
+    AppendLog("[ADMIN] Windows service start failed. Falling back to local "
+              "process.\n");
+  }
+#endif
+
+  // Check if systemd is available and try to start that way first on Linux
 #ifdef __WXGTK__
   if (wxExecute("systemctl list-unit-files riscos-access-server.service",
                 wxEXEC_SYNC | wxEXEC_NOEVENTS) == 0) {
@@ -260,6 +415,9 @@ void ControlPanel::OnStart(wxCommandEvent &event) {
 
   m_running = true;
   m_isSystemd = false;
+#ifdef _WIN32
+  m_isWindowsService = false;
+#endif
   AppendLog(wxString::Format("[ADMIN] Server started (PID %ld)\n", m_pid));
   UpdateStatus();
 
@@ -275,6 +433,19 @@ void ControlPanel::OnStop(wxCommandEvent &event) {
 void ControlPanel::StopServer() {
   if (!m_running)
     return;
+
+#ifdef _WIN32
+  if (m_isWindowsService) {
+    AppendLog("[ADMIN] Stopping Windows service...\n");
+    if (StopWindowsService()) {
+      AppendLog("[ADMIN] Windows service stopped.\n");
+    } else {
+      AppendLog("[ADMIN] Failed to stop Windows service.\n");
+    }
+    UpdateStatus();
+    return;
+  }
+#endif
 
   if (m_isSystemd) {
     AppendLog("[ADMIN] Stopping system service...\n");
@@ -325,6 +496,22 @@ void ControlPanel::OnRestart(wxCommandEvent &event) {
 }
 
 void ControlPanel::RestartServer() {
+#ifdef _WIN32
+  if (m_isWindowsService) {
+    AppendLog("[ADMIN] Restarting Windows service...\n");
+    StopWindowsService();
+    wxMilliSleep(500);
+    if (StartWindowsService()) {
+      wxMilliSleep(500);
+      UpdateStatus();
+    } else {
+      AppendLog("[ADMIN] Failed to restart Windows service.\n");
+      UpdateStatus();
+    }
+    return;
+  }
+#endif
+
   if (m_isSystemd) {
     AppendLog("[ADMIN] Restarting system service...\n");
 #ifdef __WXGTK__
