@@ -20,7 +20,15 @@
 
 // Maximum pending write transfers
 #define MAX_PENDING_WRITES 32
-#define WRITE_CHUNK_SIZE 4096
+#define WRITE_CHUNK_SIZE 8192
+
+#ifndef O_BINARY
+#define O_BINARY 0
+#endif
+
+#ifdef _WIN32
+#define strncasecmp _strnicmp
+#endif
 
 // Pending write transfer state
 typedef struct {
@@ -32,6 +40,7 @@ typedef struct {
   unsigned char rid[3]; // Reply ID to use
   char addr[64];        // Client address
   unsigned short port;  // Client port
+  int retries;          // Retry counter for empty packets
 } pending_write_t;
 
 static pending_write_t pending_writes[MAX_PENDING_WRITES];
@@ -51,6 +60,7 @@ static pending_write_t *alloc_pending_write(void) {
   for (int i = 0; i < MAX_PENDING_WRITES; i++) {
     if (!pending_writes[i].active) {
       pending_writes[i].active = 1;
+      pending_writes[i].retries = 0;
       return &pending_writes[i];
     }
   }
@@ -359,7 +369,8 @@ static void send_s_pkt(ras_net *net, const unsigned char *rid, const void *data,
   ras_net_sendto(net->rpc, &pkt, 4 + dlen, addr, port);
 }
 
-// Build FileDesc (20 bytes): load(4), exec(4), length(4), attrs(4), type(4)
+// Build FileDesc (20 bytes): load(4), exec(4), length(4), attrs(4),
+// type+flags(4)
 static void build_filedesc(unsigned char *out, const struct stat *st,
                            uint32_t filetype) {
   uint64_t cs = ras_time_to_riscos(st->st_mtime);
@@ -370,11 +381,16 @@ static void build_filedesc(unsigned char *out, const struct stat *st,
   uint32_t attrs = ras_mode_to_attrs(st->st_mode);
   uint32_t type = S_ISDIR(st->st_mode) ? RAS_TYPE_DIR : RAS_TYPE_FILE;
 
+  // Pack type with flags: type (bits 0-7), buffered (bit 8), interactive (bit
+  // 9), noosgbpb (bit 10) Files are buffered (bit 8 = 1), not interactive (bit
+  // 9 = 0), support OSGBPB (bit 10 = 0)
+  uint32_t type_and_flags = type | (1 << 8); // Set buffered flag
+
   write_u32(out, load);
   write_u32(out + 4, exec);
   write_u32(out + 8, len);
   write_u32(out + 12, attrs);
-  write_u32(out + 16, type);
+  write_u32(out + 16, type_and_flags);
 }
 
 // Build directory entries only (without header/trailer)
@@ -714,13 +730,15 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         send_r_pkt(net, rid, reply, sizeof(reply), addr, port);
       } else {
         // It's a file
-        int flags = (code == 0x01) ? O_RDONLY : O_RDWR;
+        uint32_t filetype = ras_filetype_from_ext(actual_path, cfg);
+        int flags = ((code == 0x01) ? O_RDONLY : O_RDWR) | O_BINARY;
+
         int fd = open(actual_path, flags);
         if (fd < 0) {
           send_err_pkt(net, rid, errno, addr, port);
           break;
         }
-        uint32_t filetype = ras_filetype_from_ext(actual_path, cfg);
+        // filetype already calculated above
         uint64_t cs = ras_time_to_riscos(st.st_mtime);
 
         int hid = 0, tok = 0;
@@ -739,6 +757,12 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         build_filedesc(reply, &st, filetype);
         write_u32(reply + 20, (uint32_t)hid);
         send_r_pkt(net, rid, reply, sizeof(reply), addr, port);
+
+        // Store open flags for reopening (needed for Windows rename)
+        ras_handle *h = NULL;
+        if (ras_handles_get(handles, hid, &h) == 0 && h) {
+          h->open_flags = flags;
+        }
       }
       break;
     }
@@ -779,18 +803,19 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       strncpy(parent, host_path, sizeof(parent) - 1);
       parent[sizeof(parent) - 1] = '\0';
       char *last_slash = strrchr(parent, '/');
-      if (last_slash && last_slash != parent) {
-        *last_slash = '\0';
-        mkpath(parent);
-      }
-      int fd = open(host_path, O_CREAT | O_TRUNC | O_RDWR, 0664);
+      *last_slash = '\0';
+      mkpath(parent);
+
+      uint32_t filetype = ras_filetype_from_ext(host_path, cfg);
+      int flags = O_CREAT | O_TRUNC | O_RDWR | O_BINARY;
+      int fd = open(host_path, flags, 0664);
       if (fd < 0) {
         send_err_pkt(net, rid, errno, addr, port);
         break;
       }
       struct stat st;
       fstat(fd, &st);
-      uint32_t filetype = ras_filetype_from_ext(host_path, cfg);
+      // filetype already calculated
       uint64_t cs = ras_time_to_riscos(time(NULL));
 
       int hid = 0, tok = 0;
@@ -802,6 +827,13 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         send_err_pkt(net, rid, EMFILE, addr, port);
         break;
       }
+
+      // Store open flags (O_CREAT | O_TRUNC | O_RDWR)
+      ras_handle *h = NULL;
+      if (ras_handles_get(handles, hid, &h) == 0 && h) {
+        h->open_flags = flags;
+      }
+
       unsigned char reply[24];
       build_filedesc(reply, &st, filetype);
       write_u32(reply + 20, (uint32_t)hid);
@@ -1208,6 +1240,57 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
           if (strcmp(h->path, new_path) != 0) {
             ras_log(RAS_LOG_DEBUG, "RSETINFO: attempting rename '%s' -> '%s'",
                     h->path, new_path);
+
+#ifdef _WIN32
+            // Windows cannot rename open files. Close, rename, reopen.
+            int old_fd = h->fd;
+            close(old_fd);
+            h->fd = -1; // Mark invalid in case of failure
+
+            // Ensure target doesn't exist (Windows rename fails only if target
+            // exists)
+            unlink(new_path);
+
+            if (rename(h->path, new_path) == 0) {
+              // Rename succeeded
+              // Re-open with saved flags
+              int flags = h->open_flags;
+              // If we don't have flags (old handle), guess RDWR
+              if (flags == 0)
+                flags = O_RDWR;
+
+              // Filter out creation flags
+              flags &= ~(O_CREAT | O_EXCL | O_TRUNC);
+
+              flags |= O_BINARY;
+
+              int new_fd = open(new_path, flags);
+              if (new_fd >= 0) {
+                h->fd = new_fd;
+                strncpy(h->path, new_path, sizeof(h->path) - 1);
+                h->path[sizeof(h->path) - 1] = '\0';
+                // Update open_flags to reflect the new state (Text/Binary)
+                h->open_flags = flags;
+
+                ras_log(RAS_LOG_DEBUG, "RSETINFO: renamed and reopened '%s'",
+                        new_path);
+              } else {
+                ras_log(RAS_LOG_ERROR,
+                        "RSETINFO: renamed but failed to reopen '%s': %s",
+                        new_path, strerror(errno));
+                // Handle is effectively dead/closed.
+              }
+            } else {
+              // Rename failed
+              ras_log(RAS_LOG_ERROR, "RSETINFO: rename failed '%s' -> '%s': %s",
+                      h->path, new_path, strerror(errno));
+              // Try to re-open original
+              int flags = h->open_flags ? h->open_flags : (O_RDWR | O_BINARY);
+              flags &= ~(O_CREAT | O_EXCL | O_TRUNC);
+              h->fd = open(h->path, flags);
+            }
+#else
+            // POSIX - just rename
             if (rename(h->path, new_path) == 0) {
               // Update handle's stored path
               strncpy(h->path, new_path, sizeof(h->path) - 1);
@@ -1217,6 +1300,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
               ras_log(RAS_LOG_ERROR, "RSETINFO: rename failed '%s' -> '%s': %s",
                       h->path, new_path, strerror(errno));
             }
+#endif
           }
         }
 
@@ -1497,8 +1581,8 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
 
     case 0x0b: // RREAD - read file data (B command format, returns S+B)
     {
-      // Format: cmd(1) + rid(3) + code(4) + handle(4) + pos(4) + length(4) = 20
-      // bytes
+      // Format: cmd(1) + rid(3) + code(4) + handle(4) + pos(4) + length(4) =
+      // 20 bytes
       if (len < 20) {
         send_err_pkt(net, rid, EINVAL, addr, port);
         break;
@@ -1862,7 +1946,9 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         break;
       }
       h->length = newlen;
-      send_r_pkt(net, rid, NULL, 0, addr, port);
+      unsigned char reply[4];
+      write_u32(reply, newlen);
+      send_r_pkt(net, rid, reply, sizeof(reply), addr, port);
       break;
     }
 
@@ -2051,6 +2137,39 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       ras_log(RAS_LOG_DEBUG, "d-pkt: no pending write found for rid");
       return 0;
     }
+
+    // If data length is 0, it means client might be busy or waiting.
+    // Instead of aborting immediately, we retry with a backoff.
+    if (data_len == 0) {
+      if (pw->retries >= 1000) {
+        ras_log(RAS_LOG_ERROR, "d-pkt: timeout waiting for data (received 0 "
+                               "bytes 1000 times), aborting write");
+        send_err_pkt(net, pw->rid, EIO, pw->addr, pw->port);
+        free_pending_write(pw);
+        return 0;
+      }
+      pw->retries++;
+      // Wait a bit to avoid flooding and give client time
+      ras_sleep_ms(10);
+
+      // Resend 'w' packet to request the expected chunk
+      uint32_t expected_rel = pw->current_pos - pw->start_pos;
+      uint32_t remaining = pw->end_pos - pw->current_pos;
+      uint32_t chunk =
+          (remaining < WRITE_CHUNK_SIZE) ? remaining : WRITE_CHUNK_SIZE;
+
+      // Log occasionally to avoid spam
+      if (pw->retries % 100 == 0) {
+        ras_log(RAS_LOG_DEBUG, "d-pkt: received 0 bytes, retrying (%d/1000)",
+                pw->retries);
+      }
+
+      send_w_pkt(net, pw->rid, expected_rel, expected_rel + chunk, pw->addr,
+                 pw->port);
+      return 0;
+    }
+    // Data received, reset retries
+    pw->retries = 0;
 
     // Get the handle
     ras_handle *h = NULL;

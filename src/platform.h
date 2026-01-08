@@ -16,10 +16,10 @@
 typedef SOCKET ras_socket;
 #define RAS_INVALID_SOCKET INVALID_SOCKET
 #else
-#include <sys/types.h>
 #include <sys/socket.h>
-#include <unistd.h>
+#include <sys/types.h>
 #include <time.h>
+#include <unistd.h>
 
 typedef int ras_socket;
 #define RAS_INVALID_SOCKET (-1)
@@ -32,9 +32,9 @@ int ras_mkdir(const char *path);
 
 // Cross-platform filesystem info
 typedef struct {
-    uint64_t free_bytes;
-    uint64_t total_bytes;
-    uint32_t block_size;
+  uint64_t free_bytes;
+  uint64_t total_bytes;
+  uint32_t block_size;
 } ras_fsinfo;
 
 int ras_get_fsinfo(const char *path, ras_fsinfo *info);

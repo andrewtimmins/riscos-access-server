@@ -24,6 +24,7 @@ typedef struct {
     uint32_t exec_addr;    // RISC OS exec address
     uint32_t length;       // File length at open time
     uint32_t attrs;        // RISC OS attributes
+    int open_flags;        // Flags used to open the file (for reopening)
     char *path;            // Host path for directory handles
 } ras_handle;
 
