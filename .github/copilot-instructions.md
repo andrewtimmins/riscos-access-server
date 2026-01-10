@@ -162,6 +162,12 @@ If `pos == 0xFFFFFFFF`, perform a **sequential read** from the current file poin
 **RWRITE (0x0c):**
 Must enforce **strict sequentiality** of incoming `d` packets. If a gap is detected (packet loss), drop the packet and send `w` (ACK) to request retransmission of the missing offset. Do NOT `lseek` past holes, as this creates zero-filled corruption.
 
+**RRENAME (0x09):**
+- A packet arms the rename and announces the new-name length; client then sends the name via `d` or `D` packet.
+- Server tolerates an extra leading zero word in the payload and requests missing data with `w` if `data_len == 0`.
+- When the source exists on disk with a `,xxx` filetype suffix (e.g., `BugReport,fff`), the server remembers that suffix and appends it to the destination if the client omits it, so `BugReport` → `BugReportass` becomes `BugReportass,fff` on disk.
+- Uses `safe_rename_cross` (Windows `MoveFileEx` with replace-existing; POSIX `rename`).
+
 **RGETSEQPTR (0x11):**
 Returns the current sequential file pointer using `lseek(fd, 0, SEEK_CUR)`. Important for execution of Obey/Run files.
 

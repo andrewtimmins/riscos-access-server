@@ -284,6 +284,10 @@ The Admin GUI includes common default mappings when creating a new configuration
 
 Ensure the server has read/write access to the share paths configured.
 
+### Log file location / permission denied
+
+By default on Linux the server writes to `/var/log/access/access.log`. If that path is not writable (e.g., running unprivileged or without the service-created directory), the server now falls back to `/tmp/riscos-access.log` and prints a warning. On Windows, logging uses `C:\AccessServer\access.log` and falls back to `./access.log` when the primary path is unavailable.
+
 ### Admin GUI won't start
 
 Make sure wxWidgets is installed (see Prerequisites section for your distribution).

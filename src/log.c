@@ -11,11 +11,13 @@
 
 #ifdef _WIN32
 #include <direct.h>
-#define LOG_PATH "access.log"
+#define LOG_PATH "C:/AccessServer/access.log"
+#define FALLBACK_LOG_PATH "./access.log"
 #else
 #include <sys/stat.h>
 #define LOG_DIR "/var/log/access"
 #define LOG_PATH "/var/log/access/access.log"
+#define FALLBACK_LOG_PATH "/tmp/riscos-access.log"
 #endif
 
 static ras_log_level g_level = RAS_LOG_INFO;
@@ -25,24 +27,32 @@ static FILE *g_log_file = NULL;
 static const char *level_names[] = {"NONE", "ERROR", "INFO", "DEBUG", "PROTO"};
 
 int ras_log_init(void) {
-#ifndef _WIN32
+#ifdef _WIN32
+  // Ensure log directory exists (best effort)
+  _mkdir("C:/AccessServer");
+#else
   // Create log directory if it doesn't exist
   struct stat st;
   if (stat(LOG_DIR, &st) != 0) {
     if (mkdir(LOG_DIR, 0755) != 0 && errno != EEXIST) {
       fprintf(stderr, "Warning: Could not create log directory %s: %s\n",
               LOG_DIR, strerror(errno));
-      fprintf(stderr, "Logging to stderr instead.\n");
-      return 0; // Not fatal, continue with stderr
     }
   }
 #endif
 
-  // Open log file for append
+  // Open log file for append (fall back to tmp if permission denied)
   g_log_file = fopen(LOG_PATH, "a");
   if (!g_log_file) {
     fprintf(stderr, "Warning: Could not open log file %s: %s\n", LOG_PATH,
             strerror(errno));
+    fprintf(stderr, "Logging to %s instead.\n", FALLBACK_LOG_PATH);
+    g_log_file = fopen(FALLBACK_LOG_PATH, "a");
+  }
+
+  if (!g_log_file) {
+    fprintf(stderr, "Warning: Could not open fallback log file %s: %s\n",
+            FALLBACK_LOG_PATH, strerror(errno));
     fprintf(stderr, "Logging to stderr instead.\n");
     return 0; // Not fatal, continue with stderr
   }

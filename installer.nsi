@@ -2,7 +2,7 @@
 # Built with NSIS (Nullsoft Scriptable Install System)
 
 !define PRODUCT_NAME "RISC OS Access/ShareFS Server"
-!define PRODUCT_VERSION "0.1.0"
+!define PRODUCT_VERSION "0.1.1"
 !define PRODUCT_PUBLISHER "Andrew Timmins"
 !define PRODUCT_WEB_SITE "https://github.com/andrewtimmins/riscos-access-server"
 !define PRODUCT_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
@@ -54,7 +54,7 @@ ShowUnInstDetails show
 !insertmacro MUI_LANGUAGE "English"
 
 # Version information
-VIProductVersion "0.1.0.0"
+VIProductVersion "0.1.1.0"
 VIAddVersionKey "ProductName" "${PRODUCT_NAME}"
 VIAddVersionKey "ProductVersion" "${PRODUCT_VERSION}"
 VIAddVersionKey "CompanyName" "${PRODUCT_PUBLISHER}"

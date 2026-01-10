@@ -16,8 +16,8 @@ typedef enum {
 } ras_log_level;
 
 // Initialize logging - opens log file
-// Linux: /var/log/access/access.log
-// Windows: ./access.log
+// Linux: /var/log/access/access.log (falls back to /tmp/riscos-access.log)
+// Windows: C:/AccessServer/access.log (falls back to ./access.log)
 int ras_log_init(void);
 
 // Shutdown logging - closes log file

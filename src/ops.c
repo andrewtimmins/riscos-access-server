@@ -7,16 +7,47 @@
 #include "log.h"
 #include "platform.h"
 #include "riscos.h"
+#include "net.h"
 
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <utime.h>
+#include <time.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
+#ifdef _WIN32
+static int map_winerr_to_errno(DWORD err) {
+  switch (err) {
+  case ERROR_FILE_NOT_FOUND:
+  case ERROR_PATH_NOT_FOUND:
+  case ERROR_INVALID_DRIVE:
+    return ENOENT;
+  case ERROR_ACCESS_DENIED:
+  case ERROR_SHARING_VIOLATION:
+  case ERROR_LOCK_VIOLATION:
+    return EACCES;
+  case ERROR_ALREADY_EXISTS:
+  case ERROR_FILE_EXISTS:
+    return EEXIST;
+  case ERROR_NOT_SAME_DEVICE:
+    return EXDEV;
+  case ERROR_INVALID_NAME:
+    return EINVAL;
+  default:
+    return EIO;
+  }
+}
+#endif
 
 // Maximum pending write transfers
 #define MAX_PENDING_WRITES 32
@@ -72,9 +103,106 @@ static void free_pending_write(pending_write_t *pw) {
     pw->active = 0;
 }
 
+// Pending rename state (RRENAME 0x09 uses an A packet followed by a D packet
+// containing the new name)
+typedef struct {
+  int active;
+  unsigned char rid[3];
+  uint32_t expected_len;      // New name length from the A packet
+  char old_host_path[512];    // Fully resolved old path on the host
+  int suffix_type;            // Existing ,xxx suffix filetype (or -1 if none)
+  char addr[64];              // Client address to reply to
+  unsigned short port;        // Client port
+  time_t started_at;          // When the rename was armed
+} pending_rename_t;
+
+static pending_rename_t pending_rename = {.suffix_type = -1};
+
+static void clear_pending_rename(void) {
+  pending_rename.active = 0;
+  pending_rename.expected_len = 0;
+  pending_rename.suffix_type = -1;
+}
+
+static int safe_rename_cross(const char *oldp, const char *newp) {
+#ifdef _WIN32
+  // Windows: handle case-only renames and allow replacement without unlink
+  // Case-only rename: use replace-existing to allow casing change in place
+  DWORD flags = MOVEFILE_REPLACE_EXISTING;
+  if (!MoveFileExA(oldp, newp, flags)) {
+    errno = map_winerr_to_errno(GetLastError());
+    return -1;
+  }
+  return 0;
+#else
+  return rename(oldp, newp);
+#endif
+}
+
 // Pending read transfer state
 #define MAX_PENDING_READS 32
 #define READ_CHUNK_SIZE 1024
+
+#define MAX_CLIENTS 128
+
+// Helpers for little-endian encoding
+static unsigned int read_u32(const unsigned char *p);
+static void write_u32(unsigned char *p, unsigned int v);
+static void send_f_pkt(ras_net *net, uint32_t code, const void *data,
+                       uint16_t dlen, const char *addr,
+                       unsigned short port);
+
+typedef struct {
+  char addr[64];
+  unsigned short port;
+} ras_client_entry;
+
+static ras_client_entry client_list[MAX_CLIENTS];
+static size_t client_count = 0;
+
+static void add_client(const char *addr, unsigned short port) {
+  if (!addr)
+    return;
+  for (size_t i = 0; i < client_count; ++i) {
+    if (client_list[i].port == port && strcmp(client_list[i].addr, addr) == 0)
+      return;
+  }
+  if (client_count >= MAX_CLIENTS)
+    return;
+  strncpy(client_list[client_count].addr, addr,
+          sizeof(client_list[client_count].addr) - 1);
+  client_list[client_count].addr[sizeof(client_list[client_count].addr) - 1] =
+      '\0';
+  client_list[client_count].port = port;
+  client_count++;
+}
+
+static void broadcast_deadhandles(ras_net *net, ras_handle_table *handles) {
+  if (!net || !handles)
+    return;
+  size_t dead_count = 0;
+  const int *dead = ras_handles_get_dead(handles, &dead_count);
+  if (!dead || dead_count == 0)
+    return;
+
+  size_t capped = dead_count > 60 ? 60 : dead_count; // ~240 bytes table
+  size_t payload_len = (capped + 1) * sizeof(uint32_t);
+  unsigned char *dh = (unsigned char *)malloc(payload_len);
+  if (!dh)
+    return;
+
+  write_u32(dh, (uint32_t)capped);
+  for (size_t i = 0; i < capped; ++i)
+    write_u32(dh + 4 + i * 4, (uint32_t)dead[i]);
+
+  for (size_t i = 0; i < client_count; ++i) {
+    send_f_pkt(net, 0x13, dh, (uint16_t)payload_len, client_list[i].addr,
+               client_list[i].port);
+  }
+
+  free(dh);
+  ras_handles_clear_dead(handles);
+}
 
 // States for RREAD ping-pong protocol
 #define RAS_READ_STATE_WAIT_DATA_ACK 0
@@ -175,6 +303,128 @@ static void send_w_pkt(ras_net *net, const unsigned char *rid, uint32_t rel_pos,
   ras_net_sendto(net->rpc, pkt, sizeof(pkt), addr, port);
 }
 
+// Encode a RISC OS path component so it is safe for the host filesystem.
+// '/' and '\\' become %2F and %5C, and '%' becomes %25 to keep the mapping
+// reversible.
+static int encode_component(const char *in, char *out, size_t out_sz) {
+  size_t o = 0;
+  for (size_t i = 0; in[i] != '\0'; ++i) {
+    unsigned char c = (unsigned char)in[i];
+    const char *esc = NULL;
+    if (c == '/')
+      esc = "%2F";
+    else if (c == '\\')
+      esc = "%5C";
+    else if (c == '%')
+      esc = "%25";
+
+    if (esc) {
+      if (o + 3 >= out_sz)
+        return -1;
+      out[o++] = esc[0];
+      out[o++] = esc[1];
+      out[o++] = esc[2];
+    } else {
+      if (o + 1 >= out_sz)
+        return -1;
+      out[o++] = (char)c;
+    }
+  }
+  if (o >= out_sz)
+    return -1;
+  out[o] = '\0';
+  return 0;
+}
+
+// Decode %xx sequences back to the original characters for catalogue display.
+// Translate RISC OS filename characters to host filesystem characters.
+// Python's Access server uses this mapping:
+//   RISC OS '/' (slash in filename) -> '.' (extension separator on host)
+//   RISC OS '.' (path separator) -> '/' (host path separator)
+//   RISC OS space -> non-breaking space (0xa0)
+// This avoids creating unintended directory structures while preserving the
+// ability to reference files with slashes in their RISC OS names.
+static void translate_ros_to_host_chars(const char *src, char *dst,
+                                         size_t dst_sz) {
+  size_t w = 0;
+  for (const char *p = src; *p && w < dst_sz - 1; ++p) {
+    unsigned char c = (unsigned char)*p;
+    if (c == '/') {
+      dst[w++] = '.';  // RISC OS slash -> dot
+    } else if (c == ' ') {
+      dst[w++] = '\xa0';  // Space -> non-breaking space
+    } else {
+      dst[w++] = *p;
+    }
+  }
+  dst[w] = '\0';
+}
+
+// Reverse translation for display: convert host characters back to RISC OS.
+static void translate_host_to_ros_chars(const char *src, char *dst,
+                                         size_t dst_sz) {
+  size_t w = 0;
+  for (const char *p = src; *p && w < dst_sz - 1; ++p) {
+    unsigned char c = (unsigned char)*p;
+    if (c == '.') {
+      dst[w++] = '/';  // Dot -> RISC OS slash
+    } else if (c == 0xa0) {
+      dst[w++] = ' ';  // Non-breaking space -> space
+    } else {
+      dst[w++] = *p;
+    }
+  }
+  dst[w] = '\0';
+}
+
+// Build the host path for a share using a pre-sanitized/encoded RISC OS tail.
+// Walks existing directories separated by '.', then treats the remainder as
+// the filename. The caller provides the already-encoded/rest string.
+// Build a host path from a RISC OS path tail (after the share name), treating
+// '.' as the RISC OS path separator and translating '/' inside components to
+// '.' so that filenames containing slashes do not create subdirectories.
+static int build_host_path_from_ro(const char *share_path, const char *rest,
+                                   char *out, size_t out_sz) {
+  int n = snprintf(out, out_sz, "%s", share_path);
+  if (n < 0 || (size_t)n >= out_sz)
+    return -1;
+
+  size_t offset = (size_t)n;
+  if (offset < out_sz)
+    out[offset] = '\0';
+
+  const char *cursor = rest;
+  while (*cursor) {
+    const char *nextdot = strchr(cursor, '.');
+    size_t seglen = nextdot ? (size_t)(nextdot - cursor) : strlen(cursor);
+
+    if (offset + 1 >= out_sz)
+      return -1;
+    out[offset++] = '/';
+
+    for (size_t i = 0; i < seglen && offset < out_sz - 1; ++i) {
+      unsigned char c = (unsigned char)cursor[i];
+      if (c == '/') {
+        out[offset++] = '.'; // RISC OS slash in filename -> dot
+      } else if (c == ' ') {
+        out[offset++] = '\xa0'; // Space -> NBSP
+      } else {
+        out[offset++] = (char)c;
+      }
+    }
+
+    if (offset >= out_sz)
+      return -1;
+    out[offset] = '\0';
+
+    if (!nextdot)
+      break;
+    cursor = nextdot + 1;
+  }
+
+  return 0;
+}
+
 static int resolve_path(const ras_config *cfg, const char *ro_path, char *out,
                         size_t out_sz) {
   if (!cfg || !ro_path || !out || out_sz == 0)
@@ -192,23 +442,16 @@ static int resolve_path(const ras_config *cfg, const char *ro_path, char *out,
     const char *name = cfg->shares[i].name;
     if (name && strlen(name) == share_len &&
         strncasecmp(name, ro_path, share_len) == 0) {
-      // Build the host path, converting '.' to '/'
-      const char *rest = dot ? dot + 1 : "";
-      int n = snprintf(out, out_sz, "%s", cfg->shares[i].path);
-      if (n < 0 || (size_t)n >= out_sz)
-        return -1;
+      // Translate RISC OS characters to host filesystem characters:
+      // - RISC OS '/' in filenames -> '.' (extension separator)
+      // - RISC OS space -> non-breaking space (0xa0)
+      // This avoids creating unintended directory structures while preserving
+      // the ability to name files with slashes in their RISC OS names.
+        const char *rest_raw = dot ? dot + 1 : "";
 
-      // Append rest of path, converting '.' to '/'
-      size_t offset = (size_t)n;
-      while (*rest && offset < out_sz - 1) {
-        out[offset++] = '/';
-        while (*rest && *rest != '.' && offset < out_sz - 1) {
-          out[offset++] = *rest++;
-        }
-        if (*rest == '.')
-          rest++;
-      }
-      out[offset] = '\0';
+        if (build_host_path_from_ro(cfg->shares[i].path, rest_raw, out, out_sz) !=
+          0)
+        return -1;
 
       ras_log(RAS_LOG_DEBUG, "resolve_path: resolved to '%s'", out);
 
@@ -322,6 +565,31 @@ static void send_d_pkt(ras_net *net, const unsigned char *rid, const void *data,
   ras_net_sendto(net->rpc, &pkt, 4 + dlen, addr, port);
 }
 
+// Send an unsolicited F packet (e.g., RDEADHANDLES broadcast)
+static void send_f_pkt(ras_net *net, uint32_t code, const void *data,
+                       uint16_t dlen, const char *addr,
+                       unsigned short port) {
+  if (!net)
+    return;
+
+  // Format: 'F' + rid(3)=0 + code(4) + handle(4)=0 + payload
+  unsigned char header[12] = {'F', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  write_u32(header + 4, code);
+  // handle field left as zero
+
+  unsigned char pkt[256];
+  size_t max_copy = sizeof(pkt) - sizeof(header);
+  size_t copy_len = dlen;
+  if (copy_len > max_copy)
+    copy_len = max_copy;
+
+  memcpy(pkt, header, sizeof(header));
+  if (data && copy_len)
+    memcpy(pkt + sizeof(header), data, copy_len);
+
+  ras_net_sendto(net->rpc, pkt, sizeof(header) + copy_len, addr, port);
+}
+
 static void send_d_pkt_with_offset(ras_net *net, const unsigned char *rid,
                                    uint32_t offset, const void *data,
                                    size_t dlen, const char *addr,
@@ -426,12 +694,14 @@ static size_t build_dir_entries(const char *dir_path, const ras_config *cfg,
                             ? RAS_FILETYPE_DIR
                             : ras_filetype_from_ext(ent->d_name, cfg);
 
-    // Strip ,xxx suffix from name for display to RISC OS
+    // Strip ,xxx suffix and translate host chars back to RISC OS-friendly name
     char display_name[256];
     ras_strip_type_suffix(ent->d_name, display_name, sizeof(display_name));
+    char ros_name[256];
+    translate_host_to_ros_chars(display_name, ros_name, sizeof(ros_name));
 
     // Entry: FileDesc(20) + name + null + padding to 4-byte
-    size_t name_len = strlen(display_name);
+    size_t name_len = strlen(ros_name);
     size_t entry_size = 20 + name_len + 1;
     entry_size = (entry_size + 3) & ~3u; // Align to 4 bytes
 
@@ -439,7 +709,7 @@ static size_t build_dir_entries(const char *dir_path, const ras_config *cfg,
       break;
 
     build_filedesc(out + offset, &st, filetype);
-    memcpy(out + offset + 20, display_name, name_len + 1);
+    memcpy(out + offset + 20, ros_name, name_len + 1);
     // Zero padding
     size_t pad_start = 20 + name_len + 1;
     while (pad_start < entry_size) {
@@ -610,6 +880,26 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
                    ras_handle_table *handles, ras_auth_state *auth) {
   if (!buf || len < 4 || !net || !cfg || !handles)
     return -1;
+
+  // Timeout pending rename if the client never delivered the D-packet
+  if (pending_rename.active) {
+    time_t now = time(NULL);
+    if (now - pending_rename.started_at > 5) {
+      ras_log(RAS_LOG_INFO,
+              "RRENAME: timeout waiting for D-pkt rid=%02x%02x%02x old='%s'",
+              pending_rename.rid[0], pending_rename.rid[1],
+              pending_rename.rid[2], pending_rename.old_host_path);
+      // Use EBUSY so legacy clients display a standard error instead of blank
+      send_err_pkt(net, pending_rename.rid, EBUSY, pending_rename.addr,
+                   pending_rename.port);
+      clear_pending_rename();
+    }
+  }
+
+  // Track client for potential broadcasts
+  add_client(addr, port);
+  // If there are pending dead handles, broadcast them now
+  broadcast_deadhandles(net, handles);
 
   unsigned char cmd = buf[0];
   unsigned char rid[3] = {buf[1], buf[2], buf[3]};
@@ -1032,6 +1322,8 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
 
       ras_handle *h = NULL;
       if (ras_handles_get(handles, hid, &h) != 0 || !h || h->fd < 0) {
+        // Broadcast any pending dead handles to all known clients
+        broadcast_deadhandles(net, handles);
         send_err_pkt(net, rid, EBADF, addr, port);
         break;
       }
@@ -1108,6 +1400,8 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
 
       ras_handle *h = NULL;
       if (ras_handles_get(handles, hid, &h) != 0 || !h) {
+        // Broadcast any pending dead handles to all known clients
+        broadcast_deadhandles(net, handles);
         send_err_pkt(net, rid, EBADF, addr, port);
         break;
       }
@@ -1334,35 +1628,71 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
 
     case 0x09: // RRENAME
     {
-      // Format: cmd(1) + rid(3) + code(4) + amount(4) + handle(4) + path...
-      // The new name is sent in a following 'D' packet
-      // For now, we need to receive the 'D' packet containing the new path
-      // This is complex - the Python does this with a thread. We'll implement a
-      // simpler version. Actually, looking at the packet format more closely:
-      // The 'amount' field at buf+8 is the length of the new name that will
-      // follow
+      // Format: cmd(1) + rid(3) + code(4) + new_len(4) + handle(4) + old_path
+      // Client then sends a 'D' packet carrying the new name of length new_len
       if (len < 16) {
         send_err_pkt(net, rid, EINVAL, addr, port);
         break;
       }
+
       uint32_t new_name_len = read_u32(buf + 8);
-      // handle is at buf+12 (but typically 0)
       const char *old_path_str = (len > 16) ? (const char *)(buf + 16) : "";
+
+      if (!new_name_len || new_name_len >= 512) {
+        send_err_pkt(net, rid, EINVAL, addr, port);
+        break;
+      }
+
+      if (pending_rename.active) {
+        if (memcmp(pending_rename.rid, rid, sizeof(pending_rename.rid)) == 0) {
+          // Duplicate A-pkt for same pending rename; ignore and keep waiting
+          ras_log(RAS_LOG_INFO,
+                  "RRENAME: duplicate A-pkt rid=%02x%02x%02x old='%s'", rid[0],
+                  rid[1], rid[2], pending_rename.old_host_path);
+          // Re-send request for the new name to prompt the client
+          send_w_pkt(net, rid, 0, pending_rename.expected_len,
+                     pending_rename.addr, pending_rename.port);
+          break;
+        }
+        // Another rename already pending; reject
+        send_err_pkt(net, rid, EBUSY, addr, port);
+        break;
+      }
 
       if (resolve_path(cfg, old_path_str, host_path, sizeof(host_path)) != 0) {
         send_err_pkt(net, rid, ENOENT, addr, port);
         break;
       }
 
-      // We need to wait for a 'D' packet containing the new name
-      // For simplicity, store the pending rename info and handle it when 'D'
-      // arrives Actually this is too complex for now - just send success The
-      // Python impl uses a thread to receive the 'D' packet For now, we can't
-      // do renames properly without state management
+      // Allow renaming files that already have a ,xxx suffix on disk
+      char actual_old_path[512];
+      if (find_file_with_suffix(host_path, actual_old_path,
+                                sizeof(actual_old_path)) != 0) {
+        send_err_pkt(net, rid, ENOENT, addr, port);
+        break;
+      }
+      int old_suffix_type = ras_filetype_from_suffix(actual_old_path);
+
+      pending_rename.active = 1;
+      memcpy(pending_rename.rid, rid, sizeof(pending_rename.rid));
+      pending_rename.expected_len = new_name_len;
+      strncpy(pending_rename.old_host_path, actual_old_path,
+              sizeof(pending_rename.old_host_path) - 1);
+      pending_rename.old_host_path[sizeof(pending_rename.old_host_path) - 1] =
+          '\0';
+      strncpy(pending_rename.addr, addr, sizeof(pending_rename.addr) - 1);
+      pending_rename.addr[sizeof(pending_rename.addr) - 1] = '\0';
+      pending_rename.port = port;
+      pending_rename.suffix_type = old_suffix_type;
+      pending_rename.started_at = time(NULL);
+
       ras_log(RAS_LOG_DEBUG,
-              "RRENAME: old='%s' new_len=%u - not fully implemented",
-              old_path_str, new_name_len);
-      send_err_pkt(net, rid, ENOSYS, addr, port);
+              "RRENAME: awaiting D-pkt rid=%02x%02x%02x old='%s' new_len=%u",
+              rid[0], rid[1], rid[2], old_path_str, new_name_len);
+
+            // Request the new name from the client (same w/d scheme as writes)
+            send_w_pkt(net, rid, 0, new_name_len, addr, port);
+      // Do not reply yet; we will send the result when the D packet arrives
       break;
     }
 
@@ -2094,11 +2424,31 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     switch (code) {
     case 0x13: // RDEADHANDLES - client asking about dead handles
     {
-      // Reply with empty list (no dead handles)
-      // Format: R + rid + count(4) where count=0
-      unsigned char reply[4];
-      write_u32(reply, 0); // No dead handles
-      send_r_pkt(net, rid, reply, sizeof(reply), addr, port);
+      size_t dead_count = 0;
+      const int *dead = ras_handles_get_dead(handles, &dead_count);
+
+      // Cap to a reasonable maximum (protocol handletable is 240/4 entries)
+      const size_t max_dead = 60; // 60 * 4 bytes = 240 bytes like original
+      if (dead_count > max_dead)
+        dead_count = max_dead;
+
+      size_t payload_len = (dead_count + 1) * sizeof(uint32_t);
+      unsigned char *reply = (unsigned char *)malloc(payload_len);
+      if (!reply) {
+        send_err_pkt(net, rid, ENOMEM, addr, port);
+        break;
+      }
+
+      write_u32(reply, (uint32_t)dead_count);
+      for (size_t i = 0; i < dead_count; ++i) {
+        write_u32(reply + 4 + i * 4, (uint32_t)dead[i]);
+      }
+
+      send_r_pkt(net, rid, reply, (uint16_t)payload_len, addr, port);
+      free(reply);
+
+      // Clear after reporting so the list doesn't grow without bound
+      ras_handles_clear_dead(handles);
       break;
     }
 
@@ -2130,6 +2480,82 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     size_t data_len = len - 8;
 
     ras_log(RAS_LOG_DEBUG, "d-pkt: rel_pos=%u data_len=%zu", rel_pos, data_len);
+
+    // Handle pending RRENAME first (client uses the lowercase 'd' channel
+    // for the new name payload). This avoids misclassifying it as a write.
+    if (pending_rename.active &&
+        memcmp(pending_rename.rid, rid, sizeof(pending_rename.rid)) == 0) {
+      if (data_len == 0) {
+        // Client is waiting; re-request the full name payload
+        send_w_pkt(net, rid, rel_pos, pending_rename.expected_len,
+                   pending_rename.addr, pending_rename.port);
+        return 0;
+      }
+
+      if (rel_pos != 0) {
+        send_err_pkt(net, rid, EINVAL, addr, port);
+        clear_pending_rename();
+        return 0;
+      }
+
+      // Some clients include an extra 4-byte zero word before the name
+      // (data_len == expected_len, but first word is 0). Skip it when present
+      // so the name string is parsed correctly.
+      const unsigned char *name_ptr = data;
+      size_t name_len = data_len;
+      if (name_len >= 4 && name_ptr[0] == 0 && name_ptr[1] == 0 &&
+          name_ptr[2] == 0 && name_ptr[3] == 0 &&
+          name_len == pending_rename.expected_len) {
+        name_ptr += 4;
+        name_len -= 4;
+      }
+
+      if (name_len == 0) {
+        send_err_pkt(net, rid, EINVAL, addr, port);
+        clear_pending_rename();
+        return 0;
+      }
+
+      size_t copy_len = name_len;
+      if (copy_len >= sizeof(host_path))
+        copy_len = sizeof(host_path) - 1;
+
+      char new_ro_path[512];
+      memcpy(new_ro_path, name_ptr, copy_len);
+      new_ro_path[copy_len] = '\0';
+
+      char new_host_path[512];
+      if (resolve_path(cfg, new_ro_path, new_host_path,
+                      sizeof(new_host_path)) != 0) {
+        send_err_pkt(net, rid, ENOENT, addr, port);
+        clear_pending_rename();
+        return 0;
+      }
+
+      // Preserve existing ,xxx suffix when renaming files stored with
+      // RISC OS filetype suffixes on disk.
+      if (pending_rename.suffix_type >= 0 &&
+          ras_filetype_from_suffix(new_host_path) < 0) {
+        char suffixed[512];
+        ras_append_type_suffix(new_host_path,
+                               (uint32_t)pending_rename.suffix_type,
+                               suffixed, sizeof(suffixed));
+        strncpy(new_host_path, suffixed, sizeof(new_host_path) - 1);
+        new_host_path[sizeof(new_host_path) - 1] = '\0';
+      }
+
+      if (safe_rename_cross(pending_rename.old_host_path, new_host_path) != 0) {
+        send_err_pkt(net, rid, errno, addr, port);
+        clear_pending_rename();
+        return 0;
+      }
+
+      ras_log(RAS_LOG_DEBUG, "RRENAME: '%s' -> '%s'",
+              pending_rename.old_host_path, new_host_path);
+      send_r_pkt(net, rid, NULL, 0, pending_rename.addr, pending_rename.port);
+      clear_pending_rename();
+      return 0;
+    }
 
     // Find pending write for this reply ID
     pending_write_t *pw = find_pending_write(rid);
@@ -2238,6 +2664,65 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       send_r_pkt(net, pw->rid, NULL, 0, pw->addr, pw->port);
       free_pending_write(pw);
     }
+    return 0;
+  }
+
+  // 'D' command - payload carrying new name for a pending RRENAME
+  // Format: D + rid(3) + new_name bytes (length announced in prior A-packet)
+  if (cmd == 'D') {
+    ras_log(RAS_LOG_INFO, "D-pkt: len=%zu rid=%02x%02x%02x", len,
+            rid[0], rid[1], rid[2]);
+    size_t payload_len = (len > 4) ? (len - 4) : 0;
+
+    if (!pending_rename.active ||
+        memcmp(pending_rename.rid, rid, sizeof(pending_rename.rid)) != 0) {
+      ras_log(RAS_LOG_INFO, "D-pkt: no pending rename for rid=%02x%02x%02x",
+              rid[0], rid[1], rid[2]);
+      return 0;
+    }
+
+    if (payload_len < pending_rename.expected_len) {
+      send_err_pkt(net, rid, EINVAL, addr, port);
+      clear_pending_rename();
+      return 0;
+    }
+
+    size_t copy_len = pending_rename.expected_len;
+    if (copy_len >= 512)
+      copy_len = 511;
+
+    char new_ro_path[512];
+    memcpy(new_ro_path, buf + 4, copy_len);
+    new_ro_path[copy_len] = '\0';
+
+    char new_host_path[512];
+    if (resolve_path(cfg, new_ro_path, new_host_path, sizeof(new_host_path)) !=
+        0) {
+      send_err_pkt(net, rid, ENOENT, addr, port);
+      clear_pending_rename();
+      return 0;
+    }
+
+    if (pending_rename.suffix_type >= 0 &&
+        ras_filetype_from_suffix(new_host_path) < 0) {
+      char suffixed[512];
+      ras_append_type_suffix(new_host_path,
+                             (uint32_t)pending_rename.suffix_type, suffixed,
+                             sizeof(suffixed));
+      strncpy(new_host_path, suffixed, sizeof(new_host_path) - 1);
+      new_host_path[sizeof(new_host_path) - 1] = '\0';
+    }
+
+    if (safe_rename_cross(pending_rename.old_host_path, new_host_path) != 0) {
+      send_err_pkt(net, rid, errno, addr, port);
+      clear_pending_rename();
+      return 0;
+    }
+
+    ras_log(RAS_LOG_DEBUG, "RRENAME: '%s' -> '%s'", pending_rename.old_host_path,
+            new_host_path);
+    send_r_pkt(net, rid, NULL, 0, pending_rename.addr, pending_rename.port);
+    clear_pending_rename();
     return 0;
   }
 

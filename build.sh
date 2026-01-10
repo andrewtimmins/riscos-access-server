@@ -298,10 +298,10 @@ if [ "$BUILD_WINDOWS" = true ] && [ "$BUILD_ZIP" = true ]; then
             # Build the installer
             makensis -NOCD installer.nsi > /dev/null
             
-            if [ -f "riscos-access-server_0.1.0-setup.exe" ]; then
-                mv riscos-access-server_0.1.0-setup.exe releases/windows/
+            if [ -f "riscos-access-server_0.1.1-setup.exe" ]; then
+                mv riscos-access-server_0.1.1-setup.exe releases/windows/
                 echo "✓ Windows installer created"
-                echo "  Installer: releases/windows/riscos-access-server_0.1.0-setup.exe"
+                echo "  Installer: releases/windows/riscos-access-server_0.1.1-setup.exe"
             else
                 echo "Warning: NSIS installer creation failed"
             fi
