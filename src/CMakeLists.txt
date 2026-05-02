@@ -1,6 +1,7 @@
 add_library(ras STATIC
     log.c
     config.c
+    names.c
     platform.c
     net.c
     handle.c

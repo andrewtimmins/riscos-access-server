@@ -5,6 +5,7 @@
 #include "ops.h"
 #include "accessplus.h"
 #include "log.h"
+#include "names.h"
 #include "platform.h"
 #include "riscos.h"
 #include "net.h"
@@ -109,7 +110,7 @@ typedef struct {
   int active;
   unsigned char rid[3];
   uint32_t expected_len;      // New name length from the A packet
-  char old_host_path[512];    // Fully resolved old path on the host
+  char old_host_path[1024];   // Fully resolved old path on the host
   int suffix_type;            // Existing ,xxx suffix filetype (or -1 if none)
   char addr[64];              // Client address to reply to
   unsigned short port;        // Client port
@@ -262,11 +263,11 @@ static void write_u32(unsigned char *p, unsigned int v) {
 
 // Create parent directories for a path (like mkdir -p)
 static int mkpath(const char *path) {
-  char tmp[512];
+  char tmp[1024];
   size_t len = strlen(path);
   if (len >= sizeof(tmp))
     return -1;
-  strcpy(tmp, path);
+  memcpy(tmp, path, len + 1);
 
   // Remove trailing slash
   if (tmp[len - 1] == '/')
@@ -303,79 +304,7 @@ static void send_w_pkt(ras_net *net, const unsigned char *rid, uint32_t rel_pos,
   ras_net_sendto(net->rpc, pkt, sizeof(pkt), addr, port);
 }
 
-// Encode a RISC OS path component so it is safe for the host filesystem.
-// '/' and '\\' become %2F and %5C, and '%' becomes %25 to keep the mapping
-// reversible.
-static int encode_component(const char *in, char *out, size_t out_sz) {
-  size_t o = 0;
-  for (size_t i = 0; in[i] != '\0'; ++i) {
-    unsigned char c = (unsigned char)in[i];
-    const char *esc = NULL;
-    if (c == '/')
-      esc = "%2F";
-    else if (c == '\\')
-      esc = "%5C";
-    else if (c == '%')
-      esc = "%25";
-
-    if (esc) {
-      if (o + 3 >= out_sz)
-        return -1;
-      out[o++] = esc[0];
-      out[o++] = esc[1];
-      out[o++] = esc[2];
-    } else {
-      if (o + 1 >= out_sz)
-        return -1;
-      out[o++] = (char)c;
-    }
-  }
-  if (o >= out_sz)
-    return -1;
-  out[o] = '\0';
-  return 0;
-}
-
-// Decode %xx sequences back to the original characters for catalogue display.
-// Translate RISC OS filename characters to host filesystem characters.
-// Python's Access server uses this mapping:
-//   RISC OS '/' (slash in filename) -> '.' (extension separator on host)
-//   RISC OS '.' (path separator) -> '/' (host path separator)
-//   RISC OS space -> non-breaking space (0xa0)
-// This avoids creating unintended directory structures while preserving the
-// ability to reference files with slashes in their RISC OS names.
-static void translate_ros_to_host_chars(const char *src, char *dst,
-                                         size_t dst_sz) {
-  size_t w = 0;
-  for (const char *p = src; *p && w < dst_sz - 1; ++p) {
-    unsigned char c = (unsigned char)*p;
-    if (c == '/') {
-      dst[w++] = '.';  // RISC OS slash -> dot
-    } else if (c == ' ') {
-      dst[w++] = '\xa0';  // Space -> non-breaking space
-    } else {
-      dst[w++] = *p;
-    }
-  }
-  dst[w] = '\0';
-}
-
-// Reverse translation for display: convert host characters back to RISC OS.
-static void translate_host_to_ros_chars(const char *src, char *dst,
-                                         size_t dst_sz) {
-  size_t w = 0;
-  for (const char *p = src; *p && w < dst_sz - 1; ++p) {
-    unsigned char c = (unsigned char)*p;
-    if (c == '.') {
-      dst[w++] = '/';  // Dot -> RISC OS slash
-    } else if (c == 0xa0) {
-      dst[w++] = ' ';  // Non-breaking space -> space
-    } else {
-      dst[w++] = *p;
-    }
-  }
-  dst[w] = '\0';
-}
+// (Filename encoding helpers moved to names.c / names.h)
 
 // Build the host path for a share using a pre-sanitized/encoded RISC OS tail.
 // Walks existing directories separated by '.', then treats the remainder as
@@ -401,21 +330,25 @@ static int build_host_path_from_ro(const char *share_path, const char *rest,
     if (offset + 1 >= out_sz)
       return -1;
     out[offset++] = '/';
-
-    for (size_t i = 0; i < seglen && offset < out_sz - 1; ++i) {
-      unsigned char c = (unsigned char)cursor[i];
-      if (c == '/') {
-        out[offset++] = '.'; // RISC OS slash in filename -> dot
-      } else if (c == ' ') {
-        out[offset++] = '\xa0'; // Space -> NBSP
-      } else {
-        out[offset++] = (char)c;
-      }
-    }
-
-    if (offset >= out_sz)
-      return -1;
     out[offset] = '\0';
+
+    // Copy the raw segment into a temporary buffer so we can encode it.
+    // Worst-case expansion is 3x (every byte becomes %XX).
+    char seg[1024];
+    if (seglen >= sizeof(seg))
+      return -1;
+    memcpy(seg, cursor, seglen);
+    seg[seglen] = '\0';
+
+    char encoded[1024];
+    if (ras_encode_host_name(seg, encoded, sizeof(encoded)) != 0)
+      return -1;
+
+    size_t enc_len = strlen(encoded);
+    if (offset + enc_len >= out_sz)
+      return -1;
+    memcpy(out + offset, encoded, enc_len + 1);
+    offset += enc_len;
 
     if (!nextdot)
       break;
@@ -492,7 +425,7 @@ static int find_file_with_suffix(const char *base_path, char *out,
   }
 
   size_t dir_len = (size_t)(last_slash - base_path);
-  char dir_path[512];
+  char dir_path[1024];
   if (dir_len >= sizeof(dir_path))
     return -1;
   memcpy(dir_path, base_path, dir_len);
@@ -644,8 +577,10 @@ static void build_filedesc(unsigned char *out, const struct stat *st,
   uint64_t cs = ras_time_to_riscos(st->st_mtime);
   uint32_t load = ras_make_load_addr(filetype, cs);
   uint32_t exec = ras_make_exec_addr(cs);
-  uint32_t len =
-      S_ISDIR(st->st_mode) ? 0x800 : (uint32_t)st->st_size; // 0x800 for dirs
+  // Cap file sizes >4 GB to 0xFFFFFFFF; the wire protocol is 32-bit.
+  uint32_t len = S_ISDIR(st->st_mode) ? 0x800u
+               : (st->st_size > (off_t)0xFFFFFFFF ? 0xFFFFFFFFu
+                                                    : (uint32_t)st->st_size);
   uint32_t attrs = ras_mode_to_attrs(st->st_mode);
   uint32_t type = S_ISDIR(st->st_mode) ? RAS_TYPE_DIR : RAS_TYPE_FILE;
 
@@ -661,135 +596,158 @@ static void build_filedesc(unsigned char *out, const struct stat *st,
   write_u32(out + 16, type_and_flags);
 }
 
-// Build directory entries only (without header/trailer)
-// Returns the number of bytes written
-static size_t build_dir_entries(const char *dir_path, const ras_config *cfg,
-                                unsigned char *out, size_t out_sz,
-                                size_t start_entry) {
-  DIR *d = opendir(dir_path);
-  if (!d)
-    return 0;
+// Comparator for qsort on ras_dir_entry: case-insensitive alphabetical.
+static int compare_dir_entries(const void *a, const void *b) {
+  const ras_dir_entry *ea = (const ras_dir_entry *)a;
+  const ras_dir_entry *eb = (const ras_dir_entry *)b;
+  return strcasecmp(ea->name ? ea->name : "", eb->name ? eb->name : "");
+}
 
-  size_t offset = 0;
-  size_t entry_idx = 0;
+// Read a directory once, decode all entry names, sort, and attach to the
+// handle's cache.  After this the handle owns the entries array.
+static void populate_dir_listing(const char *host_path, const ras_config *cfg,
+                                 ras_handle_table *handles, int hid) {
+  DIR *d = opendir(host_path);
+  if (!d)
+    return;
+
+  ras_dir_entry *entries = NULL;
+  size_t count = 0;
+  size_t capacity = 0;
   struct dirent *ent;
 
   while ((ent = readdir(d)) != NULL) {
     if (ent->d_name[0] == '.')
       continue;
 
-    if (entry_idx < start_entry) {
-      entry_idx++;
-      continue;
+    if (count >= 100000) {
+      ras_log(RAS_LOG_INFO, "populate_dir_listing: capped at 100000 entries in '%s'",
+              host_path);
+      break;
     }
 
-    char full_path[512];
-    snprintf(full_path, sizeof(full_path), "%s/%s", dir_path, ent->d_name);
+    char full_path[1024];
+    snprintf(full_path, sizeof(full_path), "%s/%s", host_path, ent->d_name);
 
     struct stat st;
-    if (stat(full_path, &st) != 0)
+    if (lstat(full_path, &st) != 0)
       continue;
 
-    uint32_t filetype = S_ISDIR(st.st_mode)
-                            ? RAS_FILETYPE_DIR
-                            : ras_filetype_from_ext(ent->d_name, cfg);
+    int filetype = S_ISDIR(st.st_mode)
+                       ? (int)RAS_FILETYPE_DIR
+                       : (int)ras_filetype_from_ext(ent->d_name, cfg);
 
-    // Strip ,xxx suffix and translate host chars back to RISC OS-friendly name
-    char display_name[256];
-    ras_strip_type_suffix(ent->d_name, display_name, sizeof(display_name));
-    char ros_name[256];
-    translate_host_to_ros_chars(display_name, ros_name, sizeof(ros_name));
+    char stripped[1024];
+    ras_strip_type_suffix(ent->d_name, stripped, sizeof(stripped));
+    char ros_name[1024];
+    if (ras_decode_host_name(stripped, ros_name, sizeof(ros_name)) != 0) {
+      strncpy(ros_name, stripped, sizeof(ros_name) - 1);
+      ros_name[sizeof(ros_name) - 1] = '\0';
+    }
 
-    // Entry: FileDesc(20) + name + null + padding to 4-byte
-    size_t name_len = strlen(ros_name);
+    if (count >= capacity) {
+      size_t new_cap = capacity == 0 ? 64 : capacity * 2;
+      ras_dir_entry *p = (ras_dir_entry *)realloc(entries,
+                                                   new_cap * sizeof(ras_dir_entry));
+      if (!p)
+        break;
+      entries = p;
+      capacity = new_cap;
+    }
+
+    entries[count].name = strdup(ros_name);
+    if (!entries[count].name)
+      break;
+    entries[count].st = st;
+    entries[count].filetype = filetype;
+    count++;
+  }
+  closedir(d);
+
+  if (count > 0)
+    qsort(entries, count, sizeof(ras_dir_entry), compare_dir_entries);
+
+  ras_handle_set_dir_listing(handles, hid, entries, count);
+}
+
+// Serialize cached directory entries into an output buffer (wire format).
+// Returns the number of bytes written.
+static size_t build_dir_entries_from_cache(const ras_dir_entry *entries,
+                                           size_t count, unsigned char *out,
+                                           size_t out_sz, size_t start_entry) {
+  size_t offset = 0;
+  for (size_t i = start_entry; i < count; i++) {
+    const ras_dir_entry *e = &entries[i];
+    size_t name_len = e->name ? strlen(e->name) : 0;
     size_t entry_size = 20 + name_len + 1;
-    entry_size = (entry_size + 3) & ~3u; // Align to 4 bytes
+    entry_size = (entry_size + 3) & ~3u;
 
     if (offset + entry_size > out_sz)
       break;
 
-    build_filedesc(out + offset, &st, filetype);
-    memcpy(out + offset + 20, ros_name, name_len + 1);
-    // Zero padding
+    build_filedesc(out + offset, &e->st, (uint32_t)e->filetype);
+    if (e->name)
+      memcpy(out + offset + 20, e->name, name_len + 1);
+    else
+      out[offset + 20] = '\0';
+
     size_t pad_start = 20 + name_len + 1;
-    while (pad_start < entry_size) {
+    while (pad_start < entry_size)
       out[offset + pad_start++] = 0;
-    }
 
     offset += entry_size;
-    entry_idx++;
   }
-
-  closedir(d);
   return offset;
 }
 
-// Send a combined S+B response for directory catalogue
-// Format: S+rid + [content_len, trailer_len, ...entries...] + B+rid + [load,
-// exec, len, access, share_val, handle, content_len, marker]
+// Send a combined S+B response for directory catalogue.
+// Uses the pre-built sorted cache from the handle.
 static void send_catalogue_response(ras_net *net, const unsigned char *rid,
-                                    const char *dir_path, const ras_config *cfg,
-                                    int handle, const char *addr,
-                                    unsigned short port) {
-  // Buffer for combined packet: S(4) + header(8) + entries(up to 1900) + B(4) +
-  // trailer(32)
+                                    const ras_dir_entry *dir_entries,
+                                    size_t dir_count, int handle,
+                                    const char *addr, unsigned short port) {
+  // Entry buffer: 1800 bytes per packet (fits in a single Ethernet frame after
+  // the S+B header overhead of ~48 bytes, keeping total ~1848 bytes < 2048).
   unsigned char pkt[2048];
   size_t offset = 0;
 
-  // S + reply_id
   pkt[offset++] = 'S';
   pkt[offset++] = rid[0];
   pkt[offset++] = rid[1];
   pkt[offset++] = rid[2];
 
-  // Build entries into temp buffer to get length
   unsigned char entries[1800];
-  size_t entries_len =
-      build_dir_entries(dir_path, cfg, entries, sizeof(entries), 0);
+  size_t entries_len = build_dir_entries_from_cache(
+      dir_entries, dir_count, entries, sizeof(entries), 0);
 
-  // Header: content_len (length of entries), trailer_len (0x24 = 36 bytes =
-  // B+rid + 8 words)
   write_u32(pkt + offset, (uint32_t)entries_len);
   offset += 4;
-  write_u32(pkt + offset, 0x24); // Trailer length = 36 bytes (includes B+rid)
+  write_u32(pkt + offset, 0x24); // trailer_len = 36 bytes (B+rid + 8 words)
   offset += 4;
 
-  // Entries
   memcpy(pkt + offset, entries, entries_len);
   offset += entries_len;
 
-  // B + reply_id
   pkt[offset++] = 'B';
   pkt[offset++] = rid[0];
   pkt[offset++] = rid[1];
   pkt[offset++] = rid[2];
 
-  // Trailer (8 words = 32 bytes): load, exec, rounded_len, access, share_val,
-  // handle, content_len, marker Python uses fixed 0xffffcd00, 0x00000000 for
-  // load/exec in trailer
   uint32_t load = 0xFFFFCD00;
-  uint32_t exec = 0x00000000;
+  uint32_t exec_val = 0x00000000;
   uint32_t rounded_len = ((uint32_t)entries_len + 2047) & ~2047u;
-  uint32_t access = 0x13; // Read-only for others, RW for owner
+  uint32_t access = 0x13;
   uint32_t share_val = (((uint32_t)handle) & 0xFFFFFF00) ^ 0xFFFFFF02;
-  uint32_t marker = 0xFFFFFFFF; // End marker
+  uint32_t marker = 0xFFFFFFFF;
 
-  write_u32(pkt + offset, load);
-  offset += 4;
-  write_u32(pkt + offset, exec);
-  offset += 4;
-  write_u32(pkt + offset, rounded_len);
-  offset += 4;
-  write_u32(pkt + offset, access);
-  offset += 4;
-  write_u32(pkt + offset, share_val);
-  offset += 4;
-  write_u32(pkt + offset, (uint32_t)handle);
-  offset += 4;
-  write_u32(pkt + offset, (uint32_t)entries_len);
-  offset += 4;
-  write_u32(pkt + offset, marker);
-  offset += 4;
+  write_u32(pkt + offset, load);          offset += 4;
+  write_u32(pkt + offset, exec_val);      offset += 4;
+  write_u32(pkt + offset, rounded_len);   offset += 4;
+  write_u32(pkt + offset, access);        offset += 4;
+  write_u32(pkt + offset, share_val);     offset += 4;
+  write_u32(pkt + offset, (uint32_t)handle); offset += 4;
+  write_u32(pkt + offset, (uint32_t)entries_len); offset += 4;
+  write_u32(pkt + offset, marker);        offset += 4;
 
   ras_log(RAS_LOG_PROTOCOL,
           "Sending S+B catalogue: %zu bytes, %zu entries_len, handle=%d",
@@ -797,47 +755,38 @@ static void send_catalogue_response(ras_net *net, const unsigned char *rid,
   ras_net_sendto(net->rpc, pkt, offset, addr, port);
 }
 
-// Send S+B response for RREADDIR (next chunk)
+// Send S+B response for RREADDIR pagination.
 static void send_readdir_response(ras_net *net, const unsigned char *rid,
-                                  const char *dir_path, const ras_config *cfg,
-                                  int handle, size_t start_entry,
-                                  const char *addr, unsigned short port) {
+                                  const ras_dir_entry *dir_entries,
+                                  size_t dir_count, int handle,
+                                  size_t start_entry, const char *addr,
+                                  unsigned short port) {
+  (void)handle; // not embedded in the readdir wire format
   unsigned char pkt[2048];
   size_t offset = 0;
 
-  // S + reply_id
   pkt[offset++] = 'S';
   pkt[offset++] = rid[0];
   pkt[offset++] = rid[1];
   pkt[offset++] = rid[2];
 
-  // Build entries
   unsigned char entries[1800];
-  size_t entries_len =
-      build_dir_entries(dir_path, cfg, entries, sizeof(entries), start_entry);
+  size_t entries_len = build_dir_entries_from_cache(
+      dir_entries, dir_count, entries, sizeof(entries), start_entry);
 
-  // Header: content_len, trailer_len (0x0c = 12 bytes for readdir)
-  write_u32(pkt + offset, (uint32_t)entries_len);
-  offset += 4;
-  write_u32(pkt + offset, 0x0c);
-  offset += 4;
+  write_u32(pkt + offset, (uint32_t)entries_len); offset += 4;
+  write_u32(pkt + offset, 0x0c);                 offset += 4;
 
-  // Entries
   memcpy(pkt + offset, entries, entries_len);
   offset += entries_len;
 
-  // B + reply_id
   pkt[offset++] = 'B';
   pkt[offset++] = rid[0];
   pkt[offset++] = rid[1];
   pkt[offset++] = rid[2];
 
-  // Trailer for readdir (3 words = 12 bytes): [content_len, marker]
-  uint32_t marker = 0xFFFFFFFF; // End marker
-  write_u32(pkt + offset, (uint32_t)entries_len);
-  offset += 4;
-  write_u32(pkt + offset, marker);
-  offset += 4;
+  write_u32(pkt + offset, (uint32_t)entries_len); offset += 4;
+  write_u32(pkt + offset, 0xFFFFFFFF);            offset += 4;
 
   ras_net_sendto(net->rpc, pkt, offset, addr, port);
 }
@@ -913,7 +862,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
   ras_log(RAS_LOG_PROTOCOL, "RPC cmd='%c' len=%zu: %s",
           (cmd >= 32 && cmd < 127) ? cmd : '?', len, hexdump);
 
-  char host_path[512];
+  char host_path[1024];
 
   // Command 'A' is the main file operation command
   // Format: cmd(1) + rid(3) + code(4) + handle(4) + path...
@@ -954,7 +903,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         break;
       }
       // Try to find file with ,xxx suffix if exact path doesn't exist
-      char actual_path[512];
+      char actual_path[1024];
       if (find_file_with_suffix(host_path, actual_path, sizeof(actual_path)) !=
           0) {
         send_err_pkt(net, rid, ENOENT, addr, port);
@@ -987,7 +936,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         break;
       }
       // Try to find file with ,xxx suffix if exact path doesn't exist
-      char actual_path[512];
+      char actual_path[1024];
       if (find_file_with_suffix(host_path, actual_path, sizeof(actual_path)) !=
           0) {
         send_err_pkt(net, rid, ENOENT, addr, port);
@@ -1074,6 +1023,8 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         send_err_pkt(net, rid, EMFILE, addr, port);
         break;
       }
+      // Pre-build the sorted directory listing so RREADDIR is O(1) per page.
+      populate_dir_listing(host_path, cfg, handles, hid);
       // Return handle + token in R response
       unsigned char reply[8];
       write_u32(reply, (uint32_t)hid);
@@ -1089,10 +1040,14 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         break;
       }
       // Create parent directories if needed
-      char parent[512];
+      char parent[1024];
       strncpy(parent, host_path, sizeof(parent) - 1);
       parent[sizeof(parent) - 1] = '\0';
       char *last_slash = strrchr(parent, '/');
+      if (!last_slash) {
+        send_err_pkt(net, rid, EINVAL, addr, port);
+        break;
+      }
       *last_slash = '\0';
       mkpath(parent);
 
@@ -1165,7 +1120,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         break;
       }
       // Try to find file with ,xxx suffix if exact path doesn't exist
-      char actual_path[512];
+      char actual_path[1024];
       if (find_file_with_suffix(host_path, actual_path, sizeof(actual_path)) !=
           0) {
         send_err_pkt(net, rid, ENOENT, addr, port);
@@ -1203,7 +1158,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         break;
       }
       // Try to find file with ,xxx suffix if exact path doesn't exist
-      char actual_path[512];
+      char actual_path[1024];
       if (find_file_with_suffix(host_path, actual_path, sizeof(actual_path)) !=
           0) {
         send_err_pkt(net, rid, ENOENT, addr, port);
@@ -1462,8 +1417,8 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         break;
       }
 
-      send_readdir_response(net, rid, h->path, cfg, hid, start_entry, addr,
-                            port);
+      send_readdir_response(net, rid, h->dir_entries, h->dir_entry_count,
+                            hid, (size_t)start_entry, addr, port);
       break;
     }
 
@@ -1665,7 +1620,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       }
 
       // Allow renaming files that already have a ,xxx suffix on disk
-      char actual_old_path[512];
+      char actual_old_path[1024];
       if (find_file_with_suffix(host_path, actual_old_path,
                                 sizeof(actual_old_path)) != 0) {
         send_err_pkt(net, rid, ENOENT, addr, port);
@@ -1819,7 +1774,11 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         break;
       }
 
-      // Seek to offset and extend file with zeros
+      // Guard against offset + zero_len overflow before using the sum.
+      if (zero_len > 0xFFFFFFFFu - offset) {
+        send_err_pkt(net, rid, EINVAL, addr, port);
+        break;
+      }
       uint32_t new_length = offset + zero_len;
       struct stat st;
       if (fstat(h->fd, &st) == 0 && (off_t)new_length > st.st_size) {
@@ -1904,8 +1863,16 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       }
       ras_log(RAS_LOG_DEBUG,
               "ROPENDIR: handle=%d, calling send_catalogue_response", hid);
-      // Send combined S+B catalogue response
-      send_catalogue_response(net, rid, host_path, cfg, hid, addr, port);
+      // Build sorted listing once; serve all RREADDIR pages from cache.
+      populate_dir_listing(host_path, cfg, handles, hid);
+      {
+        ras_handle *dh = NULL;
+        ras_handles_get(handles, hid, &dh);
+        send_catalogue_response(net, rid,
+                                dh ? dh->dir_entries : NULL,
+                                dh ? dh->dir_entry_count : 0,
+                                hid, addr, port);
+      }
       break;
     }
 
@@ -2017,8 +1984,9 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         send_err_pkt(net, rid, EBADF, addr, port);
         break;
       }
-      // Send combined S+B readdir response
-      send_readdir_response(net, rid, h->path, cfg, hid, 0, addr, port);
+      // extra field is the start offset for pagination
+      send_readdir_response(net, rid, h->dir_entries, h->dir_entry_count,
+                            hid, (size_t)extra, addr, port);
       break;
     }
 
@@ -2213,7 +2181,8 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         send_err_pkt(net, rid, EBADF, addr, port);
         break;
       }
-      send_readdir_response(net, rid, h->path, cfg, hid, start, addr, port);
+      send_readdir_response(net, rid, h->dir_entries, h->dir_entry_count,
+                            hid, (size_t)start, addr, port);
       break;
     }
 
@@ -2377,6 +2346,10 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         break;
       }
 
+      if (zero_len > 0xFFFFFFFFu - offset) {
+        send_err_pkt(net, rid, EINVAL, addr, port);
+        break;
+      }
       uint32_t new_length = offset + zero_len;
       struct stat st;
       if (fstat(h->fd, &st) == 0 && (off_t)new_length > st.st_size) {
@@ -2520,11 +2493,11 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       if (copy_len >= sizeof(host_path))
         copy_len = sizeof(host_path) - 1;
 
-      char new_ro_path[512];
+      char new_ro_path[1024];
       memcpy(new_ro_path, name_ptr, copy_len);
       new_ro_path[copy_len] = '\0';
 
-      char new_host_path[512];
+      char new_host_path[1024];
       if (resolve_path(cfg, new_ro_path, new_host_path,
                       sizeof(new_host_path)) != 0) {
         send_err_pkt(net, rid, ENOENT, addr, port);
@@ -2536,7 +2509,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       // RISC OS filetype suffixes on disk.
       if (pending_rename.suffix_type >= 0 &&
           ras_filetype_from_suffix(new_host_path) < 0) {
-        char suffixed[512];
+        char suffixed[1024];
         ras_append_type_suffix(new_host_path,
                                (uint32_t)pending_rename.suffix_type,
                                suffixed, sizeof(suffixed));
@@ -2691,11 +2664,11 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     if (copy_len >= 512)
       copy_len = 511;
 
-    char new_ro_path[512];
+    char new_ro_path[1024];
     memcpy(new_ro_path, buf + 4, copy_len);
     new_ro_path[copy_len] = '\0';
 
-    char new_host_path[512];
+    char new_host_path[1024];
     if (resolve_path(cfg, new_ro_path, new_host_path, sizeof(new_host_path)) !=
         0) {
       send_err_pkt(net, rid, ENOENT, addr, port);
@@ -2705,7 +2678,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
 
     if (pending_rename.suffix_type >= 0 &&
         ras_filetype_from_suffix(new_host_path) < 0) {
-      char suffixed[512];
+      char suffixed[1024];
       ras_append_type_suffix(new_host_path,
                              (uint32_t)pending_rename.suffix_type, suffixed,
                              sizeof(suffixed));
