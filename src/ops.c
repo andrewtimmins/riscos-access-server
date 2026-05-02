@@ -1452,7 +1452,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         // Only rename files, not directories (directories don't need ,xxx
         // suffix)
         if (h->path[0] && h->type == RAS_HANDLE_FILE) {
-          char new_path[512];
+          char new_path[1024];
           ras_append_type_suffix(h->path, new_ftype, new_path,
                                  sizeof(new_path));
           if (strcmp(h->path, new_path) != 0) {
@@ -1485,8 +1485,8 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
               int new_fd = open(new_path, flags);
               if (new_fd >= 0) {
                 h->fd = new_fd;
-                strncpy(h->path, new_path, sizeof(h->path) - 1);
-                h->path[sizeof(h->path) - 1] = '\0';
+                char *np = realloc(h->path, strlen(new_path) + 1);
+                if (np) { h->path = np; strcpy(h->path, new_path); }
                 // Update open_flags to reflect the new state (Text/Binary)
                 h->open_flags = flags;
 
@@ -1511,8 +1511,8 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
             // POSIX - just rename
             if (rename(h->path, new_path) == 0) {
               // Update handle's stored path
-              strncpy(h->path, new_path, sizeof(h->path) - 1);
-              h->path[sizeof(h->path) - 1] = '\0';
+              char *np = realloc(h->path, strlen(new_path) + 1);
+              if (np) { h->path = np; strcpy(h->path, new_path); }
               ras_log(RAS_LOG_DEBUG, "RSETINFO: renamed to '%s'", new_path);
             } else {
               ras_log(RAS_LOG_ERROR, "RSETINFO: rename failed '%s' -> '%s': %s",
