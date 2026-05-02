@@ -23,6 +23,9 @@ endif()
 
 add_subdirectory(src)
 
+include(CTest)
+add_subdirectory(tests)
+
 # Admin GUI (wxWidgets required)
 if(RAS_BUILD_ADMIN)
     add_subdirectory(admin)

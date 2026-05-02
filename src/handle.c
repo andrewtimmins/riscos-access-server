@@ -19,10 +19,20 @@ int ras_handles_init(ras_handle_table *t) {
     return 0;
 }
 
+static void free_dir_entries(ras_handle *h) {
+    if (!h || !h->dir_entries) return;
+    for (size_t i = 0; i < h->dir_entry_count; i++)
+        free(h->dir_entries[i].name);
+    free(h->dir_entries);
+    h->dir_entries = NULL;
+    h->dir_entry_count = 0;
+}
+
 void ras_handles_free(ras_handle_table *t) {
     if (!t) return;
     for (size_t i = 0; i < t->count; ++i) {
         free(t->items[i].path);
+        free_dir_entries(&t->items[i]);
     }
     free(t->items);
     free(t->dead_handles);
@@ -52,6 +62,8 @@ int ras_handles_add_ex(ras_handle_table *t, ras_handle_type type, int fd, const 
     h->exec_addr = exec;
     h->length = len;
     h->attrs = attrs;
+    h->dir_entries = NULL;
+    h->dir_entry_count = 0;
     if (path) {
         h->path = (char *)malloc(strlen(path) + 1);
         if (h->path) strcpy(h->path, path);
@@ -73,6 +85,7 @@ int ras_handles_close(ras_handle_table *t, int id, int token) {
                 t->dead_handles[t->dead_count++] = id;
             }
             free(t->items[i].path);
+            free_dir_entries(&t->items[i]);
             t->items[i] = t->items[t->count - 1];
             t->count -= 1;
             if (t->count == 0) {
@@ -121,6 +134,7 @@ int ras_handles_remove(ras_handle_table *t, int id) {
             }
             if (t->items[i].fd >= 0) close(t->items[i].fd);
             free(t->items[i].path);
+            free_dir_entries(&t->items[i]);
             t->items[i] = t->items[t->count - 1];
             t->count -= 1;
             if (t->count == 0) {
@@ -147,4 +161,23 @@ const int *ras_handles_get_dead(ras_handle_table *t, size_t *out_count) {
     }
     if (out_count) *out_count = t->dead_count;
     return t->dead_handles;
+}
+
+void ras_handle_set_dir_listing(ras_handle_table *t, int id,
+                                ras_dir_entry *entries, size_t count) {
+    if (!t) return;
+    for (size_t i = 0; i < t->count; ++i) {
+        if (t->items[i].id == id) {
+            free_dir_entries(&t->items[i]);
+            t->items[i].dir_entries = entries;
+            t->items[i].dir_entry_count = count;
+            return;
+        }
+    }
+    // Handle not found: caller owns the memory, free it
+    if (entries) {
+        for (size_t i = 0; i < count; i++)
+            free(entries[i].name);
+        free(entries);
+    }
 }
