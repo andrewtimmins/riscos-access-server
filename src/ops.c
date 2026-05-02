@@ -13,7 +13,6 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -483,21 +482,6 @@ static void send_r_pkt(ras_net *net, const unsigned char *rid, const void *data,
   ras_net_sendto(net->rpc, &pkt, 4 + dlen, addr, port);
 }
 
-static void send_d_pkt(ras_net *net, const unsigned char *rid, const void *data,
-                       size_t dlen, const char *addr, unsigned short port) {
-  unsigned char header[4] = {'D', rid[0], rid[1], rid[2]};
-  struct {
-    unsigned char h[4];
-    unsigned char p[2048];
-  } pkt;
-  if (dlen > sizeof(pkt.p))
-    dlen = sizeof(pkt.p);
-  memcpy(pkt.h, header, 4);
-  if (data && dlen)
-    memcpy(pkt.p, data, dlen);
-  ras_net_sendto(net->rpc, &pkt, 4 + dlen, addr, port);
-}
-
 // Send an unsolicited F packet (e.g., RDEADHANDLES broadcast)
 static void send_f_pkt(ras_net *net, uint32_t code, const void *data,
                        uint16_t dlen, const char *addr,
@@ -553,21 +537,6 @@ static void send_d_pkt_with_offset(ras_net *net, const unsigned char *rid,
     memcpy(pkt.p, data, dlen);
 
   ras_net_sendto(net->rpc, &pkt, 8 + dlen, addr, port);
-}
-
-static void send_s_pkt(ras_net *net, const unsigned char *rid, const void *data,
-                       size_t dlen, const char *addr, unsigned short port) {
-  unsigned char header[4] = {'S', rid[0], rid[1], rid[2]};
-  struct {
-    unsigned char h[4];
-    unsigned char p[2048];
-  } pkt;
-  if (dlen > sizeof(pkt.p))
-    dlen = sizeof(pkt.p);
-  memcpy(pkt.h, header, 4);
-  if (data && dlen)
-    memcpy(pkt.p, data, dlen);
-  ras_net_sendto(net->rpc, &pkt, 4 + dlen, addr, port);
 }
 
 // Build FileDesc (20 bytes): load(4), exec(4), length(4), attrs(4),
@@ -1483,7 +1452,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         // Only rename files, not directories (directories don't need ,xxx
         // suffix)
         if (h->path[0] && h->type == RAS_HANDLE_FILE) {
-          char new_path[512];
+          char new_path[1024];
           ras_append_type_suffix(h->path, new_ftype, new_path,
                                  sizeof(new_path));
           if (strcmp(h->path, new_path) != 0) {
@@ -1516,8 +1485,8 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
               int new_fd = open(new_path, flags);
               if (new_fd >= 0) {
                 h->fd = new_fd;
-                strncpy(h->path, new_path, sizeof(h->path) - 1);
-                h->path[sizeof(h->path) - 1] = '\0';
+                char *np = realloc(h->path, strlen(new_path) + 1);
+                if (np) { h->path = np; strcpy(h->path, new_path); }
                 // Update open_flags to reflect the new state (Text/Binary)
                 h->open_flags = flags;
 
@@ -1542,8 +1511,8 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
             // POSIX - just rename
             if (rename(h->path, new_path) == 0) {
               // Update handle's stored path
-              strncpy(h->path, new_path, sizeof(h->path) - 1);
-              h->path[sizeof(h->path) - 1] = '\0';
+              char *np = realloc(h->path, strlen(new_path) + 1);
+              if (np) { h->path = np; strcpy(h->path, new_path); }
               ras_log(RAS_LOG_DEBUG, "RSETINFO: renamed to '%s'", new_path);
             } else {
               ras_log(RAS_LOG_ERROR, "RSETINFO: rename failed '%s' -> '%s': %s",
