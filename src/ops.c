@@ -13,7 +13,6 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -483,21 +482,6 @@ static void send_r_pkt(ras_net *net, const unsigned char *rid, const void *data,
   ras_net_sendto(net->rpc, &pkt, 4 + dlen, addr, port);
 }
 
-static void send_d_pkt(ras_net *net, const unsigned char *rid, const void *data,
-                       size_t dlen, const char *addr, unsigned short port) {
-  unsigned char header[4] = {'D', rid[0], rid[1], rid[2]};
-  struct {
-    unsigned char h[4];
-    unsigned char p[2048];
-  } pkt;
-  if (dlen > sizeof(pkt.p))
-    dlen = sizeof(pkt.p);
-  memcpy(pkt.h, header, 4);
-  if (data && dlen)
-    memcpy(pkt.p, data, dlen);
-  ras_net_sendto(net->rpc, &pkt, 4 + dlen, addr, port);
-}
-
 // Send an unsolicited F packet (e.g., RDEADHANDLES broadcast)
 static void send_f_pkt(ras_net *net, uint32_t code, const void *data,
                        uint16_t dlen, const char *addr,
@@ -553,21 +537,6 @@ static void send_d_pkt_with_offset(ras_net *net, const unsigned char *rid,
     memcpy(pkt.p, data, dlen);
 
   ras_net_sendto(net->rpc, &pkt, 8 + dlen, addr, port);
-}
-
-static void send_s_pkt(ras_net *net, const unsigned char *rid, const void *data,
-                       size_t dlen, const char *addr, unsigned short port) {
-  unsigned char header[4] = {'S', rid[0], rid[1], rid[2]};
-  struct {
-    unsigned char h[4];
-    unsigned char p[2048];
-  } pkt;
-  if (dlen > sizeof(pkt.p))
-    dlen = sizeof(pkt.p);
-  memcpy(pkt.h, header, 4);
-  if (data && dlen)
-    memcpy(pkt.p, data, dlen);
-  ras_net_sendto(net->rpc, &pkt, 4 + dlen, addr, port);
 }
 
 // Build FileDesc (20 bytes): load(4), exec(4), length(4), attrs(4),
