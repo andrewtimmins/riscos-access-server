@@ -30,6 +30,7 @@ public:
     ControlPanel* GetControlPanel() { return m_controlPanel; }
 
 private:
+    void OnSave(wxCommandEvent& event);
     void OnApply(wxCommandEvent& event);
     void OnRevert(wxCommandEvent& event);
     void OnExit(wxCommandEvent& event);
@@ -47,6 +48,7 @@ private:
     MimePanel* m_mimePanel;
     ControlPanel* m_controlPanel;
     
+    wxButton* m_saveBtn;
     wxButton* m_applyBtn;
     wxButton* m_revertBtn;
     
@@ -58,7 +60,8 @@ private:
 };
 
 enum {
-    ID_APPLY = wxID_HIGHEST + 1,
+    ID_SAVE = wxID_HIGHEST + 1,
+    ID_APPLY,
     ID_REVERT
 };
 

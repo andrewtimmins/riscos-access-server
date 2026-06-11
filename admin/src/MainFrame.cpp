@@ -7,13 +7,16 @@
 #include "MimePanel.h"
 #include "ControlPanel.h"
 #include <wx/filename.h>
+#include <wx/hyperlink.h>
 #include <wx/msgdlg.h>
 
 wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
+    EVT_MENU(ID_SAVE, MainFrame::OnSave)
     EVT_MENU(ID_APPLY, MainFrame::OnApply)
     EVT_MENU(ID_REVERT, MainFrame::OnRevert)
     EVT_MENU(wxID_EXIT, MainFrame::OnExit)
     EVT_MENU(wxID_ABOUT, MainFrame::OnAbout)
+    EVT_BUTTON(ID_SAVE, MainFrame::OnSave)
     EVT_BUTTON(ID_APPLY, MainFrame::OnApply)
     EVT_BUTTON(ID_REVERT, MainFrame::OnRevert)
     EVT_CLOSE(MainFrame::OnClose)
@@ -54,7 +57,11 @@ MainFrame::MainFrame(const wxString& title)
     m_revertBtn = new wxButton(buttonBar, ID_REVERT, "Revert Changes");
     m_revertBtn->Disable();
     buttonSizer->Add(m_revertBtn, 0, wxALL, 8);
-    
+
+    m_saveBtn = new wxButton(buttonBar, ID_SAVE, "Save");
+    m_saveBtn->Disable();
+    buttonSizer->Add(m_saveBtn, 0, wxALL, 8);
+
     m_applyBtn = new wxButton(buttonBar, ID_APPLY, "Apply && Restart");
     m_applyBtn->Disable();
     buttonSizer->Add(m_applyBtn, 0, wxALL, 8);
@@ -68,7 +75,8 @@ MainFrame::MainFrame(const wxString& title)
 
 void MainFrame::CreateMenuBar() {
     wxMenu* fileMenu = new wxMenu;
-    fileMenu->Append(ID_APPLY, "&Apply && Restart\tCtrl+S", "Save configuration and restart server");
+    fileMenu->Append(ID_SAVE, "&Save\tCtrl+S", "Save configuration");
+    fileMenu->Append(ID_APPLY, "&Apply && Restart\tCtrl+Shift+R", "Save configuration and restart server");
     fileMenu->Append(ID_REVERT, "&Revert Changes", "Discard unsaved changes");
     fileMenu->AppendSeparator();
     fileMenu->Append(wxID_EXIT, "E&xit\tAlt+F4", "Exit application");
@@ -103,6 +111,7 @@ void MainFrame::UpdateTitle() {
 void MainFrame::SetModified(bool modified) {
     if (m_modified != modified) {
         m_modified = modified;
+        m_saveBtn->Enable(modified);
         m_applyBtn->Enable(modified);
         m_revertBtn->Enable(modified);
         UpdateTitle();
@@ -114,6 +123,7 @@ void MainFrame::LoadConfig(const std::string& path) {
     if (m_config.Load(path, error)) {
         m_configPath = path;
         m_modified = false;
+        m_saveBtn->Disable();
         m_applyBtn->Disable();
         m_revertBtn->Disable();
         UpdateTitle();
@@ -135,10 +145,11 @@ void MainFrame::SaveConfig() {
     if (m_configPath.empty()) {
         m_configPath = "access.conf";
     }
-    
+
     std::string error;
     if (m_config.Save(m_configPath, error)) {
         m_modified = false;
+        m_saveBtn->Disable();
         m_applyBtn->Disable();
         m_revertBtn->Disable();
         UpdateTitle();
@@ -155,11 +166,14 @@ void MainFrame::RevertConfig() {
     }
 }
 
+void MainFrame::OnSave(wxCommandEvent& event) {
+    wxUnusedVar(event);
+    SaveConfig();
+}
+
 void MainFrame::OnApply(wxCommandEvent& event) {
     wxUnusedVar(event);
     SaveConfig();
-    
-    // Restart the server with new config
     m_controlPanel->RestartServer();
     SetStatusText("Configuration saved and server restarted");
 }
@@ -197,11 +211,31 @@ void MainFrame::OnClose(wxCloseEvent& event) {
 
 void MainFrame::OnAbout(wxCommandEvent& event) {
     wxUnusedVar(event);
-    wxMessageBox(wxT("Access/ShareFS Server Admin\n\n")
-                 wxT("Administration and control utility for\n")
-                 wxT("the Access/ShareFS server.\n\n")
-                 wxT("Copyright © Andrew Timmins, 2025.\n\n")
-                 wxT("Licensed under the GNU General Public License v3.0\n")
-                 wxT("https://www.gnu.org/licenses/gpl-3.0.html"),
-                 wxT("About"), wxOK | wxICON_INFORMATION);
+
+    wxDialog dlg(this, wxID_ANY, "About Access/ShareFS Admin",
+                 wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE);
+
+    wxBoxSizer* sizer = new wxBoxSizer(wxVERTICAL);
+
+    sizer->Add(new wxStaticText(&dlg, wxID_ANY,
+        "Access/ShareFS Server Admin\n\n"
+        "Administration and control utility for\n"
+        "the Access/ShareFS server.\n\n"
+        "Copyright \xC2\xA9 Andrew Timmins, 2025."),
+        0, wxALL, 15);
+
+    wxBoxSizer* licRow = new wxBoxSizer(wxHORIZONTAL);
+    licRow->Add(new wxStaticText(&dlg, wxID_ANY, "Licensed under the "),
+                0, wxALIGN_CENTRE_VERTICAL);
+    licRow->Add(new wxHyperlinkCtrl(&dlg, wxID_ANY,
+        "GNU General Public License v3.0",
+        "https://www.gnu.org/licenses/gpl-3.0.html"),
+        0, wxALIGN_CENTRE_VERTICAL);
+    sizer->Add(licRow, 0, wxLEFT | wxRIGHT | wxBOTTOM, 15);
+
+    sizer->Add(dlg.CreateButtonSizer(wxOK), 0, wxEXPAND | wxBOTTOM, 10);
+
+    dlg.SetSizerAndFit(sizer);
+    dlg.Centre();
+    dlg.ShowModal();
 }
