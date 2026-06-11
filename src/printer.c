@@ -37,6 +37,31 @@ static int ensure_dir(const char *path) {
     return 0; // best effort; no stat check to keep minimal dependencies
 }
 
+// Wrap s in single quotes for POSIX shell, escaping embedded single quotes.
+// E.g. "foo'bar" -> "'foo'\\''bar'"
+static int shell_quote(const char *s, char *out, size_t out_sz) {
+    size_t o = 0;
+    if (o >= out_sz) return -1;
+    out[o++] = '\'';
+    for (; *s; s++) {
+        if (*s == '\'') {
+            // End current quote, emit \', restart quote
+            if (o + 4 >= out_sz) return -1;
+            out[o++] = '\'';
+            out[o++] = '\\';
+            out[o++] = '\'';
+            out[o++] = '\'';
+        } else {
+            if (o + 1 >= out_sz) return -1;
+            out[o++] = *s;
+        }
+    }
+    if (o + 2 > out_sz) return -1;
+    out[o++] = '\'';
+    out[o] = '\0';
+    return 0;
+}
+
 static int replace_cmd(const char *tmpl, const char *filepath, char *out, size_t out_sz) {
     if (!tmpl || !filepath || !out || out_sz == 0) return -1;
     const char *needle = strstr(tmpl, "%f");
@@ -44,13 +69,19 @@ static int replace_cmd(const char *tmpl, const char *filepath, char *out, size_t
         snprintf(out, out_sz, "%s", tmpl);
         return 0;
     }
+
+    // Shell-quote the filepath before substituting it so that paths containing
+    // spaces or other metacharacters are not misinterpreted by the shell.
+    char quoted[2048];
+    if (shell_quote(filepath, quoted, sizeof(quoted)) != 0) return -1;
+
     size_t prefix = (size_t)(needle - tmpl);
     size_t suffix = strlen(needle + 2);
-    size_t file_len = strlen(filepath);
-    if (prefix + file_len + suffix + 1 > out_sz) return -1;
+    size_t quoted_len = strlen(quoted);
+    if (prefix + quoted_len + suffix + 1 > out_sz) return -1;
     memcpy(out, tmpl, prefix);
-    memcpy(out + prefix, filepath, file_len);
-    memcpy(out + prefix + file_len, needle + 2, suffix + 1);
+    memcpy(out + prefix, quoted, quoted_len);
+    memcpy(out + prefix + quoted_len, needle + 2, suffix + 1);
     return 0;
 }
 

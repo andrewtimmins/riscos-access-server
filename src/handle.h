@@ -37,6 +37,8 @@ typedef struct {
     char *path;                 // Host path for directory handles
     ras_dir_entry *dir_entries; // Sorted cached listing (dir handles only)
     size_t dir_entry_count;
+    char client_addr[64];       // IP address of the client that opened this handle
+    unsigned short client_port; // Port of the client that opened this handle
 } ras_handle;
 
 typedef struct {
@@ -55,6 +57,11 @@ int ras_handles_add_ex(ras_handle_table *t, ras_handle_type type, int fd, const 
                        int *out_id, int *out_token);
 int ras_handles_close(ras_handle_table *t, int id, int token);
 int ras_handles_get(ras_handle_table *t, int id, ras_handle **out);
+int ras_handles_get_for_client(ras_handle_table *t, int id,
+                               const char *addr, unsigned short port,
+                               ras_handle **out);
+void ras_handle_set_client(ras_handle_table *t, int id,
+                           const char *addr, unsigned short port);
 int ras_handles_remove(ras_handle_table *t, int id);
 ras_handle *ras_handles_lookup(ras_handle_table *t, int id, int token);
 void ras_handles_clear_dead(ras_handle_table *t);
