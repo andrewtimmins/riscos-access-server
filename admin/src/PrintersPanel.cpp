@@ -2,6 +2,8 @@
 
 #include "PrintersPanel.h"
 #include "MainFrame.h"
+#include <wx/dirdlg.h>
+#include <wx/filedlg.h>
 
 enum {
   ID_ADD_PRINTER = wxID_HIGHEST + 200,
@@ -47,21 +49,47 @@ PrintersPanel::PrintersPanel(wxWindow *parent, MainFrame *frame)
   grid->Add(new wxStaticText(m_detailPanel, wxID_ANY, "Name:"), 0,
             wxALIGN_CENTER_VERTICAL);
   m_nameCtrl = new wxTextCtrl(m_detailPanel, wxID_ANY);
+  m_nameCtrl->SetToolTip("Printer name as seen by RISC OS clients");
   m_nameCtrl->Bind(wxEVT_TEXT, &PrintersPanel::OnDetailChanged, this);
   grid->Add(m_nameCtrl, 1, wxEXPAND);
 
   grid->Add(new wxStaticText(m_detailPanel, wxID_ANY, "Spool Path:"), 0,
             wxALIGN_CENTER_VERTICAL);
+  wxBoxSizer *pathSizer = new wxBoxSizer(wxHORIZONTAL);
   m_pathCtrl = new wxTextCtrl(m_detailPanel, wxID_ANY);
+  m_pathCtrl->SetToolTip("Directory where spooled print jobs are stored");
   m_pathCtrl->Bind(wxEVT_TEXT, &PrintersPanel::OnDetailChanged, this);
-  grid->Add(m_pathCtrl, 1, wxEXPAND);
+  pathSizer->Add(m_pathCtrl, 1, wxEXPAND);
+  wxButton *browsePathBtn = new wxButton(m_detailPanel, wxID_ANY, "Browse...");
+  browsePathBtn->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) {
+    wxDirDialog dlg(this, "Select Printer Spool Directory",
+                    m_pathCtrl->GetValue(),
+                    wxDD_DEFAULT_STYLE | wxDD_DIR_MUST_EXIST);
+    if (dlg.ShowModal() == wxID_OK)
+      m_pathCtrl->SetValue(dlg.GetPath());
+  });
+  pathSizer->Add(browsePathBtn, 0, wxLEFT, 5);
+  grid->Add(pathSizer, 1, wxEXPAND);
 
   grid->Add(new wxStaticText(m_detailPanel, wxID_ANY, "Definition:"), 0,
             wxALIGN_CENTER_VERTICAL);
+  wxBoxSizer *defSizer = new wxBoxSizer(wxHORIZONTAL);
   m_definitionCtrl = new wxTextCtrl(m_detailPanel, wxID_ANY);
   m_definitionCtrl->SetHint("/path/to/printer.fc6");
+  m_definitionCtrl->SetToolTip("Path to the RISC OS printer definition (.fc6) file");
   m_definitionCtrl->Bind(wxEVT_TEXT, &PrintersPanel::OnDetailChanged, this);
-  grid->Add(m_definitionCtrl, 1, wxEXPAND);
+  defSizer->Add(m_definitionCtrl, 1, wxEXPAND);
+  wxButton *browseDefBtn = new wxButton(m_detailPanel, wxID_ANY, "Browse...");
+  browseDefBtn->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) {
+    wxFileDialog dlg(this, "Select Printer Definition", "",
+                     m_definitionCtrl->GetValue(),
+                     "Printer definitions (*.fc6)|*.fc6|All files (*.*)|*.*",
+                     wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+    if (dlg.ShowModal() == wxID_OK)
+      m_definitionCtrl->SetValue(dlg.GetPath());
+  });
+  defSizer->Add(browseDefBtn, 0, wxLEFT, 5);
+  grid->Add(defSizer, 1, wxEXPAND);
 
   grid->Add(new wxStaticText(m_detailPanel, wxID_ANY, "Description:"), 0,
             wxALIGN_CENTER_VERTICAL);
@@ -84,6 +112,7 @@ PrintersPanel::PrintersPanel(wxWindow *parent, MainFrame *frame)
             wxALIGN_CENTER_VERTICAL);
   m_commandCtrl = new wxTextCtrl(m_detailPanel, wxID_ANY);
   m_commandCtrl->SetHint("lpr -P printer %f");
+  m_commandCtrl->SetToolTip("Shell command to print a file; %f is replaced with the spool file path");
   m_commandCtrl->Bind(wxEVT_TEXT, &PrintersPanel::OnDetailChanged, this);
   grid->Add(m_commandCtrl, 1, wxEXPAND);
 
@@ -183,16 +212,24 @@ void PrintersPanel::OnAddPrinter(wxCommandEvent &event) {
 void PrintersPanel::OnRemovePrinter(wxCommandEvent &event) {
   wxUnusedVar(event);
 
-  if (m_currentIndex >= 0 &&
-      m_currentIndex < (int)m_frame->GetConfig().Printers().size()) {
-    m_frame->GetConfig().Printers().erase(
-        m_frame->GetConfig().Printers().begin() + m_currentIndex);
-    RefreshList();
-    m_currentIndex = -1;
-    m_detailPanel->Hide();
-    Layout();
-    m_frame->SetModified(true);
-  }
+  if (m_currentIndex < 0 ||
+      m_currentIndex >= (int)m_frame->GetConfig().Printers().size())
+    return;
+
+  const std::string& name = m_frame->GetConfig().Printers()[m_currentIndex].name;
+  int result = wxMessageBox(
+      wxString::Format("Remove printer '%s'?", name),
+      "Confirm Remove", wxYES_NO | wxICON_QUESTION, this);
+  if (result != wxYES)
+    return;
+
+  m_frame->GetConfig().Printers().erase(
+      m_frame->GetConfig().Printers().begin() + m_currentIndex);
+  RefreshList();
+  m_currentIndex = -1;
+  m_detailPanel->Hide();
+  Layout();
+  m_frame->SetModified(true);
 }
 
 void PrintersPanel::OnPrinterSelected(wxListEvent &event) {

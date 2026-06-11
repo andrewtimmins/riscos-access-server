@@ -55,6 +55,7 @@ SharesPanel::SharesPanel(wxWindow *parent, MainFrame *frame)
                        wxSize(labelWidth, -1));
   row1->Add(labelName, 0, wxALIGN_CENTER_VERTICAL);
   m_nameCtrl = new wxTextCtrl(m_detailPanel, wxID_ANY);
+  m_nameCtrl->SetToolTip("Share name as seen by RISC OS clients (no spaces)");
   m_nameCtrl->Bind(wxEVT_TEXT, &SharesPanel::OnDetailChanged, this);
   row1->Add(m_nameCtrl, 1, wxEXPAND);
   formSizer->Add(row1, 0, wxEXPAND | wxBOTTOM, 8);
@@ -66,6 +67,7 @@ SharesPanel::SharesPanel(wxWindow *parent, MainFrame *frame)
                        wxSize(labelWidth, -1));
   row2->Add(labelPath, 0, wxALIGN_CENTER_VERTICAL);
   m_pathCtrl = new wxTextCtrl(m_detailPanel, wxID_ANY);
+  m_pathCtrl->SetToolTip("Absolute path on this server to share with clients");
   m_pathCtrl->Bind(wxEVT_TEXT, &SharesPanel::OnDetailChanged, this);
   row2->Add(m_pathCtrl, 1, wxEXPAND);
   wxButton *browseBtn =
@@ -82,6 +84,7 @@ SharesPanel::SharesPanel(wxWindow *parent, MainFrame *frame)
   m_passwordCtrl =
       new wxTextCtrl(m_detailPanel, wxID_ANY, "", wxDefaultPosition,
                      wxDefaultSize, wxTE_PASSWORD);
+  m_passwordCtrl->SetToolTip("Optional password required to access this share");
   m_passwordCtrl->Bind(wxEVT_TEXT, &SharesPanel::OnDetailChanged, this);
   row3->Add(m_passwordCtrl, 1, wxEXPAND);
   formSizer->Add(row3, 0, wxEXPAND | wxBOTTOM, 8);
@@ -116,6 +119,11 @@ SharesPanel::SharesPanel(wxWindow *parent, MainFrame *frame)
   m_attrHidden = new wxCheckBox(m_detailPanel, wxID_ANY, "Hidden from browser");
   m_attrHidden->Bind(wxEVT_CHECKBOX, &SharesPanel::OnAttrChanged, this);
   attrBox->Add(m_attrHidden, 0, wxALL, 5);
+
+  m_attrSubdir = new wxCheckBox(m_detailPanel, wxID_ANY, "Subdirectory share");
+  m_attrSubdir->SetToolTip("Share represents a subdirectory of the host path");
+  m_attrSubdir->Bind(wxEVT_CHECKBOX, &SharesPanel::OnAttrChanged, this);
+  attrBox->Add(m_attrSubdir, 0, wxALL, 5);
 
   m_attrCdrom = new wxCheckBox(m_detailPanel, wxID_ANY, "CD-ROM share");
   m_attrCdrom->Bind(wxEVT_CHECKBOX, &SharesPanel::OnAttrChanged, this);
@@ -170,6 +178,7 @@ void SharesPanel::ShowDetails(int index) {
   m_attrProtected->SetValue(share.attributes & RAS_ATTR_PROTECTED);
   m_attrReadonly->SetValue(share.attributes & RAS_ATTR_READONLY);
   m_attrHidden->SetValue(share.attributes & RAS_ATTR_HIDDEN);
+  m_attrSubdir->SetValue(share.attributes & RAS_ATTR_SUBDIR);
   m_attrCdrom->SetValue(share.attributes & RAS_ATTR_CDROM);
 
   m_detailPanel->Show();
@@ -184,7 +193,9 @@ void SharesPanel::SaveCurrentDetails() {
     return;
 
   ShareConfig &share = m_frame->GetConfig().Shares()[m_currentIndex];
-  share.name = m_nameCtrl->GetValue().ToStdString();
+  std::string newName = m_nameCtrl->GetValue().ToStdString();
+  if (newName.empty()) newName = share.name; // don't save blank name
+  share.name = newName;
   share.path = m_pathCtrl->GetValue().ToStdString();
   share.password = m_passwordCtrl->GetValue().ToStdString();
   share.default_type = m_defaultTypeCtrl->GetValue().ToStdString();
@@ -196,6 +207,8 @@ void SharesPanel::SaveCurrentDetails() {
     share.attributes |= RAS_ATTR_READONLY;
   if (m_attrHidden->GetValue())
     share.attributes |= RAS_ATTR_HIDDEN;
+  if (m_attrSubdir->GetValue())
+    share.attributes |= RAS_ATTR_SUBDIR;
   if (m_attrCdrom->GetValue())
     share.attributes |= RAS_ATTR_CDROM;
 
@@ -221,16 +234,24 @@ void SharesPanel::OnAddShare(wxCommandEvent &event) {
 void SharesPanel::OnRemoveShare(wxCommandEvent &event) {
   wxUnusedVar(event);
 
-  if (m_currentIndex >= 0 &&
-      m_currentIndex < (int)m_frame->GetConfig().Shares().size()) {
-    m_frame->GetConfig().Shares().erase(m_frame->GetConfig().Shares().begin() +
-                                        m_currentIndex);
-    RefreshList();
-    m_currentIndex = -1;
-    m_detailPanel->Hide();
-    Layout();
-    m_frame->SetModified(true);
-  }
+  if (m_currentIndex < 0 ||
+      m_currentIndex >= (int)m_frame->GetConfig().Shares().size())
+    return;
+
+  const std::string& name = m_frame->GetConfig().Shares()[m_currentIndex].name;
+  int result = wxMessageBox(
+      wxString::Format("Remove share '%s'?", name),
+      "Confirm Remove", wxYES_NO | wxICON_QUESTION, this);
+  if (result != wxYES)
+    return;
+
+  m_frame->GetConfig().Shares().erase(m_frame->GetConfig().Shares().begin() +
+                                      m_currentIndex);
+  RefreshList();
+  m_currentIndex = -1;
+  m_detailPanel->Hide();
+  Layout();
+  m_frame->SetModified(true);
 }
 
 void SharesPanel::OnShareSelected(wxListEvent &event) {

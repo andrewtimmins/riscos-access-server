@@ -81,13 +81,17 @@ wxBEGIN_EVENT_TABLE(ControlPanel, wxPanel)
 
   configGrid->Add(new wxStaticText(this, wxID_ANY, "Config File:"), 0,
                   wxALIGN_CENTER_VERTICAL);
-  m_configPath = new wxTextCtrl(this, wxID_ANY,
+  {
+    wxString defaultConfig;
 #ifdef __WXMSW__
-                                "C:/AccessServer/access.conf"
+    wxString pd;
+    if (!wxGetEnv("ProgramData", &pd) || pd.empty()) pd = "C:";
+    defaultConfig = pd + "\\AccessServer\\access.conf";
 #else
-                                "access.conf"
+    defaultConfig = "/etc/riscos-access-server/access.conf";
 #endif
-  );
+    m_configPath = new wxTextCtrl(this, wxID_ANY, defaultConfig);
+  }
   configGrid->Add(m_configPath, 1, wxEXPAND);
   wxButton *browseBtn = new wxButton(this, ID_BROWSE_CONFIG, "Browse...");
   configGrid->Add(browseBtn, 0);
@@ -189,6 +193,11 @@ void ControlPanel::UpdateStatus() {
 }
 
 void ControlPanel::AppendLog(const wxString &text) {
+  // Trim oldest lines when the log grows too large
+  if (m_logView->GetNumberOfLines() > 5000) {
+    long trimPos = m_logView->XYToPosition(0, 1000);
+    if (trimPos > 0) m_logView->Remove(0, trimPos);
+  }
   m_logView->AppendText(text);
   m_logView->ShowPosition(m_logView->GetLastPosition());
 }
@@ -283,7 +292,7 @@ bool ControlPanel::StartWindowsService() {
 
   bool success = false;
   if (StartService(service, 0, NULL) || GetLastError() == ERROR_SERVICE_ALREADY_RUNNING) {
-    // Poll for running state
+    // Poll for running state, yielding to keep the UI responsive
     SERVICE_STATUS status;
     for (int i = 0; i < 50; ++i) { // up to ~10s
       if (QueryServiceStatus(service, &status) &&
@@ -291,6 +300,7 @@ bool ControlPanel::StartWindowsService() {
         success = true;
         break;
       }
+      wxSafeYield();
       Sleep(200);
     }
   }
@@ -317,13 +327,14 @@ bool ControlPanel::StopWindowsService() {
 
   if (ControlService(service, SERVICE_CONTROL_STOP, &status) ||
       GetLastError() == ERROR_SERVICE_NOT_ACTIVE) {
-    // Poll for stopped state
+    // Poll for stopped state, yielding to keep the UI responsive
     for (int i = 0; i < 50; ++i) { // up to ~10s
       if (QueryServiceStatus(service, &status) &&
           status.dwCurrentState == SERVICE_STOPPED) {
         success = true;
         break;
       }
+      wxSafeYield();
       Sleep(200);
     }
   }
@@ -361,6 +372,11 @@ void ControlPanel::OnStart(wxCommandEvent &event) {
   if (wxExecute("systemctl list-unit-files riscos-access-server.service",
                 wxEXEC_SYNC | wxEXEC_NOEVENTS) == 0) {
     AppendLog("[ADMIN] Attempting to start system service...\n");
+    wxString display, waylandDisplay;
+    if ((!wxGetEnv("DISPLAY", &display) || display.empty()) &&
+        (!wxGetEnv("WAYLAND_DISPLAY", &waylandDisplay) || waylandDisplay.empty())) {
+      AppendLog("[WARN] No graphical display detected; pkexec elevation may fail.\n");
+    }
     long ret =
         wxExecute("pkexec systemctl start riscos-access-server", wxEXEC_SYNC);
     if (ret == 0 || CheckSystemdStatus()) {
@@ -380,20 +396,27 @@ void ControlPanel::OnStart(wxCommandEvent &event) {
     return;
   }
 
-  // Find the access binary - look relative to this executable
+  // Find the access server binary; search common locations in priority order
   wxFileName exePath(wxStandardPaths::Get().GetExecutablePath());
-  wxString accessPath = exePath.GetPath() + wxFileName::GetPathSeparator() +
-                        ".." + wxFileName::GetPathSeparator() + "src" +
-                        wxFileName::GetPathSeparator() + "access";
+  wxString exeDir = exePath.GetPath();
+  wxString sep = wxFileName::GetPathSeparator();
 
-  // If that doesn't exist, try same directory
-  if (!wxFileExists(accessPath)) {
-    accessPath = exePath.GetPath() + wxFileName::GetPathSeparator() + "access";
-  }
+  wxArrayString candidates;
+  candidates.Add(exeDir + sep + ".." + sep + "src" + sep + "access");
+  candidates.Add(exeDir + sep + "access");
+#ifndef _WIN32
+  candidates.Add("/usr/local/bin/access");
+  candidates.Add("/usr/bin/access");
+#else
+  candidates.Add("C:\\AccessServer\\access.exe");
+#endif
 
-  // If still not found, try just "access" in PATH
-  if (!wxFileExists(accessPath)) {
-    accessPath = "access";
+  wxString accessPath = "access"; // fallback: search PATH
+  for (size_t i = 0; i < candidates.GetCount(); ++i) {
+    if (wxFileExists(candidates[i])) {
+      accessPath = candidates[i];
+      break;
+    }
   }
 
   // Build command
@@ -517,8 +540,7 @@ void ControlPanel::RestartServer() {
 #ifdef __WXGTK__
     wxExecute("pkexec systemctl restart riscos-access-server", wxEXEC_SYNC);
 #endif
-    wxMilliSleep(1000); // Wait for service to restart
-    UpdateStatus();
+    UpdateStatus(); // timer will confirm state shortly
   } else {
     StopServer();
     wxMilliSleep(500);

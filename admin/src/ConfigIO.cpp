@@ -5,6 +5,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 
 // Trim whitespace from string
 static std::string Trim(const std::string& str) {
@@ -94,7 +95,7 @@ bool RasConfig::Load(const std::string& path, std::string& error) {
             if (key == "log_level") {
                 m_server.log_level = value;
             } else if (key == "broadcast_interval") {
-                m_server.broadcast_interval = std::stoi(value);
+                try { m_server.broadcast_interval = std::stoi(value); } catch (...) { m_server.broadcast_interval = 3; }
             } else if (key == "access_plus") {
                 m_server.access_plus = (ToLower(value) == "true" || value == "1");
             } else if (key == "bind_ip") {
@@ -118,7 +119,7 @@ bool RasConfig::Load(const std::string& path, std::string& error) {
             } else if (key == "description") {
                 currentPrinter->description = value;
             } else if (key == "poll_interval") {
-                currentPrinter->poll_interval = std::stoi(value);
+                try { currentPrinter->poll_interval = std::stoi(value); } catch (...) { currentPrinter->poll_interval = 5; }
             } else if (key == "command") {
                 currentPrinter->command = value;
             }
@@ -140,63 +141,83 @@ bool RasConfig::Load(const std::string& path, std::string& error) {
 }
 
 bool RasConfig::Save(const std::string& path, std::string& error) {
-    std::ofstream file(path);
-    if (!file.is_open()) {
-        error = "Cannot write to file: " + path;
+    std::string tmpPath = path + ".tmp";
+    {
+        std::ofstream file(tmpPath);
+        if (!file.is_open()) {
+            error = "Cannot write to file: " + tmpPath;
+            return false;
+        }
+
+        file << "# Access/ShareFS Server Configuration\n\n";
+
+        // Server section
+        file << "[server]\n";
+        file << "log_level = " << m_server.log_level << "\n";
+        file << "broadcast_interval = " << m_server.broadcast_interval << "\n";
+        file << "access_plus = " << (m_server.access_plus ? "true" : "false") << "\n";
+        if (!m_server.bind_ip.empty()) {
+            file << "bind_ip = " << m_server.bind_ip << "\n";
+        }
+        file << "\n";
+
+        // Shares
+        for (const auto& share : m_shares) {
+            file << "[share:" << share.name << "]\n";
+            file << "path = " << share.path << "\n";
+            if (share.attributes) {
+                file << "attributes = " << AttrsToString(share.attributes) << "\n";
+            }
+            if (!share.password.empty()) {
+                file << "password = " << share.password << "\n";
+            }
+            if (!share.default_type.empty()) {
+                file << "default_filetype = " << share.default_type << "\n";
+            }
+            file << "\n";
+        }
+
+        // Printers
+        for (const auto& printer : m_printers) {
+            file << "[printer:" << printer.name << "]\n";
+            if (!printer.path.empty())
+                file << "path = " << printer.path << "\n";
+            if (!printer.definition.empty())
+                file << "definition = " << printer.definition << "\n";
+            if (!printer.description.empty())
+                file << "description = " << printer.description << "\n";
+            file << "poll_interval = " << printer.poll_interval << "\n";
+            if (!printer.command.empty())
+                file << "command = " << printer.command << "\n";
+            file << "\n";
+        }
+
+        // MIME map
+        if (!m_mimemap.empty()) {
+            file << "[mimemap]\n";
+            for (const auto& entry : m_mimemap) {
+                file << entry.ext << " = " << entry.filetype << "\n";
+            }
+        }
+
+        file.flush();
+        if (file.fail()) {
+            error = "Write error on file: " + tmpPath;
+            std::remove(tmpPath.c_str());
+            return false;
+        }
+    }
+
+    // Atomic replace; on Windows the destination must not exist first
+#ifdef _WIN32
+    std::remove(path.c_str());
+#endif
+    if (std::rename(tmpPath.c_str(), path.c_str()) != 0) {
+        error = "Failed to replace config file: " + path;
+        std::remove(tmpPath.c_str());
         return false;
     }
-    
-    file << "# Access/ShareFS Server Configuration\n\n";
-    
-    // Server section
-    file << "[server]\n";
-    file << "log_level = " << m_server.log_level << "\n";
-    file << "broadcast_interval = " << m_server.broadcast_interval << "\n";
-    file << "access_plus = " << (m_server.access_plus ? "true" : "false") << "\n";
-    if (!m_server.bind_ip.empty()) {
-        file << "bind_ip = " << m_server.bind_ip << "\n";
-    }
-    file << "\n";
-    
-    // Shares
-    for (const auto& share : m_shares) {
-        file << "[share:" << share.name << "]\n";
-        file << "path = " << share.path << "\n";
-        if (share.attributes) {
-            file << "attributes = " << AttrsToString(share.attributes) << "\n";
-        }
-        if (!share.password.empty()) {
-            file << "password = " << share.password << "\n";
-        }
-        if (!share.default_type.empty()) {
-            file << "default_filetype = " << share.default_type << "\n";
-        }
-        file << "\n";
-    }
-    
-    // Printers
-    for (const auto& printer : m_printers) {
-        file << "[printer:" << printer.name << "]\n";
-        if (!printer.path.empty())
-            file << "path = " << printer.path << "\n";
-        if (!printer.definition.empty())
-            file << "definition = " << printer.definition << "\n";
-        if (!printer.description.empty())
-            file << "description = " << printer.description << "\n";
-        file << "poll_interval = " << printer.poll_interval << "\n";
-        if (!printer.command.empty())
-            file << "command = " << printer.command << "\n";
-        file << "\n";
-    }
-    
-    // MIME map
-    if (!m_mimemap.empty()) {
-        file << "[mimemap]\n";
-        for (const auto& entry : m_mimemap) {
-            file << entry.ext << " = " << entry.filetype << "\n";
-        }
-    }
-    
+
     return true;
 }
 
@@ -205,6 +226,7 @@ std::string RasConfig::AttrsToString(uint32_t attrs) {
     if (attrs & RAS_ATTR_PROTECTED) parts.push_back("protected");
     if (attrs & RAS_ATTR_READONLY) parts.push_back("readonly");
     if (attrs & RAS_ATTR_HIDDEN) parts.push_back("hidden");
+    if (attrs & RAS_ATTR_SUBDIR) parts.push_back("subdir");
     if (attrs & RAS_ATTR_CDROM) parts.push_back("cdrom");
     
     std::string result;
@@ -222,6 +244,7 @@ uint32_t RasConfig::StringToAttrs(const std::string& str) {
     if (lower.find("protected") != std::string::npos) attrs |= RAS_ATTR_PROTECTED;
     if (lower.find("readonly") != std::string::npos) attrs |= RAS_ATTR_READONLY;
     if (lower.find("hidden") != std::string::npos) attrs |= RAS_ATTR_HIDDEN;
+    if (lower.find("subdir") != std::string::npos) attrs |= RAS_ATTR_SUBDIR;
     if (lower.find("cdrom") != std::string::npos) attrs |= RAS_ATTR_CDROM;
     
     return attrs;

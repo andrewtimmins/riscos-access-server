@@ -38,6 +38,7 @@ private:
     wxCheckBox* m_attrProtected;
     wxCheckBox* m_attrReadonly;
     wxCheckBox* m_attrHidden;
+    wxCheckBox* m_attrSubdir;
     wxCheckBox* m_attrCdrom;
     
     int m_currentIndex = -1;

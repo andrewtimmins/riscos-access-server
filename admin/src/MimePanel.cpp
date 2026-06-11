@@ -53,6 +53,7 @@ MimePanel::MimePanel(wxWindow *parent, MainFrame *frame)
             wxALIGN_CENTER_VERTICAL);
   m_extCtrl = new wxTextCtrl(m_detailPanel, wxID_ANY, "", wxDefaultPosition,
                              wxSize(100, -1));
+  m_extCtrl->SetToolTip("File extension without leading dot (e.g. txt, html)");
   m_extCtrl->Bind(wxEVT_TEXT, &MimePanel::OnDetailChanged, this);
   grid->Add(m_extCtrl, 0);
 
@@ -61,6 +62,7 @@ MimePanel::MimePanel(wxWindow *parent, MainFrame *frame)
   m_typeCtrl = new wxTextCtrl(m_detailPanel, wxID_ANY, "", wxDefaultPosition,
                               wxDefaultSize);
   m_typeCtrl->SetMaxLength(3);
+  m_typeCtrl->SetToolTip("Three-digit hexadecimal RISC OS filetype (e.g. FFF for Text)");
   m_typeCtrl->Bind(wxEVT_TEXT, &MimePanel::OnDetailChanged, this);
   grid->Add(m_typeCtrl, 0);
 
@@ -163,16 +165,24 @@ void MimePanel::OnAddEntry(wxCommandEvent &event) {
 void MimePanel::OnRemoveEntry(wxCommandEvent &event) {
   wxUnusedVar(event);
 
-  if (m_currentIndex >= 0 &&
-      m_currentIndex < (int)m_frame->GetConfig().MimeMap().size()) {
-    m_frame->GetConfig().MimeMap().erase(
-        m_frame->GetConfig().MimeMap().begin() + m_currentIndex);
-    RefreshList();
-    m_currentIndex = -1;
-    m_detailPanel->Hide();
-    Layout();
-    m_frame->SetModified(true);
-  }
+  if (m_currentIndex < 0 ||
+      m_currentIndex >= (int)m_frame->GetConfig().MimeMap().size())
+    return;
+
+  const std::string& ext = m_frame->GetConfig().MimeMap()[m_currentIndex].ext;
+  int result = wxMessageBox(
+      wxString::Format("Remove mapping for '.%s'?", ext),
+      "Confirm Remove", wxYES_NO | wxICON_QUESTION, this);
+  if (result != wxYES)
+    return;
+
+  m_frame->GetConfig().MimeMap().erase(
+      m_frame->GetConfig().MimeMap().begin() + m_currentIndex);
+  RefreshList();
+  m_currentIndex = -1;
+  m_detailPanel->Hide();
+  Layout();
+  m_frame->SetModified(true);
 }
 
 void MimePanel::OnEntrySelected(wxListEvent &event) {
@@ -182,6 +192,35 @@ void MimePanel::OnEntrySelected(wxListEvent &event) {
 void MimePanel::OnDetailChanged(wxCommandEvent &event) {
   if (m_updating || m_currentIndex < 0)
     return;
+
+  // Sanitize extension: strip leading dot, lowercase, alphanumeric only
+  if (event.GetEventObject() == m_extCtrl) {
+    wxString val = m_extCtrl->GetValue();
+    wxString clean;
+    bool changed = false;
+    long pos = m_extCtrl->GetInsertionPoint();
+
+    for (wxString::iterator it = val.begin(); it != val.end(); ++it) {
+      wxChar c = *it;
+      if (c == '.' && clean.empty()) { changed = true; continue; } // strip leading dot
+      if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+        clean += c;
+      } else if (c >= 'A' && c <= 'Z') {
+        clean += wxTolower(c);
+        changed = true;
+      } else {
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      m_updating = true;
+      m_extCtrl->ChangeValue(clean);
+      if (pos > (long)clean.length()) pos = clean.length();
+      m_extCtrl->SetInsertionPoint(pos);
+      m_updating = false;
+    }
+  }
 
   // Validate/Sanitize Filetype (Hex only, Uppercase)
   if (event.GetEventObject() == m_typeCtrl) {
