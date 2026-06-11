@@ -64,6 +64,8 @@ int ras_handles_add_ex(ras_handle_table *t, ras_handle_type type, int fd, const 
     h->attrs = attrs;
     h->dir_entries = NULL;
     h->dir_entry_count = 0;
+    h->client_addr[0] = '\0';
+    h->client_port = 0;
     if (path) {
         h->path = (char *)malloc(strlen(path) + 1);
         if (h->path) strcpy(h->path, path);
@@ -106,6 +108,39 @@ ras_handle *ras_handles_lookup(ras_handle_table *t, int id, int token) {
         }
     }
     return NULL;
+}
+
+void ras_handle_set_client(ras_handle_table *t, int id,
+                           const char *addr, unsigned short port) {
+    if (!t || !addr) return;
+    for (size_t i = 0; i < t->count; ++i) {
+        if (t->items[i].id == id) {
+            strncpy(t->items[i].client_addr, addr,
+                    sizeof(t->items[i].client_addr) - 1);
+            t->items[i].client_addr[sizeof(t->items[i].client_addr) - 1] = '\0';
+            t->items[i].client_port = port;
+            return;
+        }
+    }
+}
+
+int ras_handles_get_for_client(ras_handle_table *t, int id,
+                               const char *addr, unsigned short port,
+                               ras_handle **out) {
+    if (!t || !out || !addr) return -1;
+    for (size_t i = 0; i < t->count; ++i) {
+        if (t->items[i].id == id) {
+            if (t->items[i].client_port != port ||
+                strcmp(t->items[i].client_addr, addr) != 0) {
+                *out = NULL;
+                return -1;
+            }
+            *out = &t->items[i];
+            return 0;
+        }
+    }
+    *out = NULL;
+    return -1;
 }
 
 // Lookup by ID only (no token check)
