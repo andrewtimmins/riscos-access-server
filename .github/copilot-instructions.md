@@ -31,10 +31,21 @@ riscos-access-server/
 │       ├── SharesPanel.cpp/h
 │       ├── PrintersPanel.cpp/h
 │       ├── MimePanel.cpp/h
-│       └── ControlPanel.cpp/h  # Start/stop/logs
+│       ├── ControlPanel.cpp/h  # Start/stop/logs
+│       └── UiHelpers.h         # Shared layout/styling helpers
 ├── CMakeLists.txt          # Root build configuration
-├── mingw-w64-x86_64.cmake  # MinGW cross-compile toolchain
-├── sharefs.conf             # Sample configuration
+├── cmake/toolchains/       # Cross-compile toolchain files
+│   ├── linux-aarch64-gnu.cmake
+│   ├── mingw-w64-x86_64.cmake
+│   └── mingw-w64-aarch64.cmake
+├── build.sh                # Main build script
+├── setup-build-env.sh      # Dependency installer (Debian/Ubuntu)
+├── installer.nsi           # Windows x64 NSIS installer
+├── debian/                 # systemd unit, postinst/postrm for .deb
+├── scripts/                # Firewall helper scripts
+├── docs/protocol.md        # Detailed protocol notes
+├── sharefs.conf.sample     # Linux sample configuration
+├── sharefs.conf.sample-windows
 └── README.md
 ```
 
@@ -44,31 +55,54 @@ riscos-access-server/
 - **Admin GUI**: wxWidgets C++ for cross-platform native look and static linking
 - **Handle limit**: Dynamic allocation (no artificial 256 limit)
 - **Configuration**: INI-style `sharefs.conf` file
-- **Cross-compilation**: Full Windows support via MinGW-w64
+- **Cross-compilation**: Windows x64 via MinGW-w64 (apt); Linux arm64 native or cross; Windows arm64 needs a custom MinGW toolchain
 - **System Integration**: Debian package uses `systemd` and auto-configures `ufw`/`firewalld` in postinst.
 
 ## Building
- 
+
 ### Automated Building (Recommended)
- 
-The project now uses helper scripts for all build tasks:
- 
-- **setup-build-env.sh**: Installs dependencies (Debian/Ubuntu) and MinGW toolchain.
-- **build.sh**: Main build script.
- 
+
+- **setup-build-env.sh**: Installs dependencies (Debian/Ubuntu), optional MinGW and arm64 cross-compiler
+- **build.sh**: Main build script
+
 #### Build Options (`./build.sh [option]`)
-- `--all-full`: Full build (Linux, Windows Server + Admin GUI, Deb package, Win Zip).
-- `--deb`: Create Debian package (`.deb`).
-- `--zip`: Create Windows Zip (`sharefs-server_X.Y.Z.zip`).
-- `--windows-full`: Windows Server + Admin GUI.
- 
+
+| Option | Effect |
+|--------|--------|
+| *(none)* | Linux only, host architecture |
+| `--deb` | Linux + `.deb` for selected arch |
+| `--arch arm64` | Linux arm64 (native on Pi) |
+| `--cross-arm64` | Cross-compile Linux arm64 from x86_64 (server only) |
+| `--windows-only` | Windows only (skip Linux rebuild) |
+| `--windows` | Linux + Windows x64 server |
+| `--windows-full` | Linux + Windows x64 + admin GUI |
+| `--windows-only --zip` | Windows x64 zip + NSIS installer |
+| `--all-full` | Linux + Windows x64 + deb + zip + NSIS |
+| `--windows-wxwidgets` | One-time wxWidgets build for MinGW |
+| `--windows-arch arm64` | Target Windows on ARM (with `--windows-only`) |
+| `--clean` | Remove build dirs and `releases/` |
+
 #### Output Structure
-- `releases/linux/`: Linux binaries and `.deb`
-- `releases/windows/`: Windows `sharefs-server.exe`, `sharefs-admin.exe`, `sharefs.conf`, and `.zip`
- 
-### Manual CMake (Legacy)
- 
-See `build.sh` source for exact CMake commands used.
+
+- `releases/linux/amd64/` and `releases/linux/arm64/` — Linux binaries and `.deb`
+- `releases/windows/x64/` and `releases/windows/arm64/` — Windows executables and `.zip`
+- NSIS installer (x64 only): `releases/windows/x64/sharefs-server_*-setup.exe`
+
+Only the architecture being built gets a release folder (empty siblings are not created).
+
+#### Architectures
+
+- **Linux:** `amd64` (default on x86_64), `arm64` (native on Pi / ARM CI, or cross via `--cross-arm64`)
+- **Windows:** `x64` (MinGW in apt), `arm64` (custom MinGW toolchain required)
+- **ARM scope:** `aarch64`/`arm64` only — no 32-bit `armhf`
+
+#### CI
+
+`.github/workflows/build.yml` builds and tests Linux amd64 and arm64 (native + cross smoke test).
+
+### Manual CMake
+
+See `README.md` or `build.sh` for toolchain file paths under `cmake/toolchains/`.
 
 ## Admin GUI Architecture
 
@@ -138,14 +172,15 @@ enum op {
 };
 ```
 
-### Share Attributes 
+### Share Attributes
 
 ```c
-#define ATTRIBUTE_PROTECTED 0x01  // Requires authentication
-#define ATTRIBUTE_READONLY  0x02  // Read-only share
-#define ATTRIBUTE_HIDDEN    0x04  // Hidden from browser
-#define ATTRIBUTE_SUBDIR    0x08  // Access+ subdirectory share
-#define ATTRIBUTE_CDROM     0x10  // CD-ROM share
+#define SFS_ATTR_PROTECTED  0x01  // Requires authentication
+#define SFS_ATTR_READONLY   0x02  // Read-only share
+#define SFS_ATTR_HIDDEN     0x04  // Hidden from browser
+#define SFS_ATTR_SUBDIR     0x08  // Access+ subdirectory share
+#define SFS_ATTR_CDROM      0x10  // CD-ROM share
+```
 
 ### Advanced Protocol Logic
 
@@ -173,7 +208,8 @@ Returns the current sequential file pointer using `lseek(fd, 0, SEEK_CUR)`. Impo
 
 **Text Files:**
 The server treats all files as binary. Text file translation (LF vs CR) is **NOT** performed. Obey files (`&FEB`) should use LF line endings (though RISC OS accepts any control character except tab as a line terminator).
-```
+
+See `docs/protocol.md` for full protocol documentation.
 
 ## RISC OS Date/Time Format
 
@@ -246,7 +282,8 @@ CMake with MinGW support:
 if(WIN32)
     target_link_libraries(sharefs-server ws2_32)
 else()
-    target_link_libraries(sharefs-server pthread)
+    find_package(Threads REQUIRED)
+    target_link_libraries(sharefs-server Threads::Threads)
 endif()
 ```
 

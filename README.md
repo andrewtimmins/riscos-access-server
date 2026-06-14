@@ -14,7 +14,7 @@ ShareFS Server is a C11 implementation of an Acorn ShareFS-compatible server for
 - **Access+ Authentication** - Password-protected shares (port 32771)
 - **RISC OS Filetype Preservation** - Via `,xxx` suffixes or automatic MIME mapping
 - **Admin GUI** - wxWidgets-based **ShareFS Admin** interface for easy configuration and server control
-- **Cross-Platform** - Native Linux and Windows builds
+- **Cross-Platform** - Native Linux (amd64, arm64) and Windows (x64, arm64) builds
 
 ---
 
@@ -22,7 +22,7 @@ ShareFS Server is a C11 implementation of an Acorn ShareFS-compatible server for
 
 ### Linux (Debian/Ubuntu)
 
-1. Download the latest `.deb` release.
+1. Download the latest `.deb` release for your architecture (`*_amd64.deb` or `*_arm64.deb`).
 2. Install it:
    ```bash
    sudo apt install ./sharefs-server_*.deb
@@ -33,7 +33,7 @@ ShareFS Server is a C11 implementation of an Acorn ShareFS-compatible server for
 
 ### Windows
 
-1. Download the Windows zip archive (`sharefs-server_*.zip`).
+1. Download the Windows zip archive (`sharefs-server_*.zip` for x64, or `sharefs-server_*-arm64.zip` for Windows on ARM) from the GitHub release assets.
 2. Extract it to a folder.
 3. Run `sharefs-server.exe` (Server) or `sharefs-admin.exe` (GUI).
    - **Note:** You likely need to allow the application through Windows Firewall (Ports 32770, 32771, 49171 UDP).
@@ -51,45 +51,152 @@ We provide scripts that automate the entire build process:
 git clone https://github.com/andrewtimmins/riscos-access-server.git
 cd riscos-access-server
 
-# Install build dependencies (auto-detects your distro)
+# Install build dependencies (Debian/Ubuntu)
 ./setup-build-env.sh
 
-# Build for Linux
+# Build for Linux (host architecture → releases/linux/amd64 or arm64/)
 ./build.sh
 ```
 
-**Output:** Binaries are placed in `releases/linux/`
+**Output:** Binaries are placed under `releases/linux/<arch>/` (e.g. `amd64` on a PC, `arm64` on a Pi).
+
+Only the architecture you build is created — empty sibling folders are not made.
+
+### Release layout
+
+```
+releases/
+├── linux/
+│   ├── amd64/          # x86_64 PCs
+│   └── arm64/          # Raspberry Pi 4/5 (64-bit OS), ARM servers
+└── windows/
+    ├── x64/            # 64-bit Windows (+ NSIS installer when built with --zip)
+    └── arm64/          # Windows on ARM (zip only)
+```
+
+**Supported ARM:** `aarch64` / `arm64` only (no 32-bit `armhf`).
 
 ### Build Options
 
 ```bash
-./build.sh                    # Linux only
-./build.sh --deb              # Linux + create .deb package
-./build.sh --windows          # Linux + Windows (server only)
-./build.sh --windows-full     # Linux + Windows (server + admin GUI)
-./build.sh --zip              # Create .zip archive (Windows only)
-./build.sh --all              # Build Linux + Win Server + .deb
-./build.sh --all-full         # Build everything (incl. Win Admin GUI + zip)
-./build.sh --clean            # Remove all build directories
+./build.sh                         # Linux only, for host architecture
+./build.sh --deb                   # Linux + .deb for host arch
+./build.sh --arch arm64 --deb      # Linux arm64 (native on Pi)
+./build.sh --cross-arm64           # Cross-compile Linux arm64 from x86_64 (server only)
+
+# Windows (see notes below)
+./build.sh --windows-only          # Windows x64 only — skips Linux rebuild
+./build.sh --windows               # Linux + Windows x64 (server only)
+./build.sh --windows-full          # Linux + Windows x64 + admin GUI
+./build.sh --windows-only --zip    # Windows x64 zip (+ NSIS installer)
+./build.sh --windows --zip         # Linux + Windows x64 + zip + NSIS installer
+./build.sh --windows-only --windows-arch arm64   # Windows on ARM (zip only)
+./build.sh --all-full              # Linux + Windows x64 + deb + zip + installer
+./build.sh --clean                 # Remove build directories and releases
+./build.sh --help                  # Full option list
+```
+
+**`--windows` vs `--windows-only`:** `--windows` and `--windows-full` always rebuild **Linux and Windows** (typical release build). Use **`--windows-only`** when you only want to refresh the Windows output under `releases/windows/<arch>/`.
+
+**Setup helpers** (run once):
+
+```bash
+./setup-build-env.sh              # Native Linux build tools + wxWidgets
+./setup-build-env.sh --windows    # + MinGW for Windows x64 cross-compile
+./setup-build-env.sh --cross-arm64 # + aarch64-linux-gnu (cross server from x86 PC)
+```
+
+### Building for Raspberry Pi (arm64)
+
+On a Pi 4/5 running **64-bit Raspberry Pi OS** (or Debian arm64):
+
+```bash
+./setup-build-env.sh
+./build.sh --deb
+```
+
+Output: `releases/linux/arm64/` including `sharefs-server_*.deb` (`arm64` package).
+
+To cross-compile the **server only** from an x86_64 PC:
+
+```bash
+./setup-build-env.sh --cross-arm64
+./build.sh --cross-arm64
+```
+
+### Building all Linux architectures
+
+There is no single `./build.sh` flag for both Linux arches. Use one of these approaches:
+
+| Goal | How |
+|------|-----|
+| **Full amd64 + arm64 `.deb` packages** | Build on an x86_64 PC (`./build.sh --deb`) and on a Pi or ARM CI runner (`./build.sh --deb` — auto-detects arm64), then combine the `releases/linux/*/` folders |
+| **Both from CI** | Download the `sharefs-linux-amd64` and `sharefs-linux-arm64` artifacts from GitHub Actions |
+| **amd64 full + arm64 server from one x86 PC** | `./build.sh --deb && ./build.sh --cross-arm64` (arm64 cross build is server-only, no admin or `.deb`) |
+
+```bash
+# x86_64 PC — full amd64 release
+./setup-build-env.sh
+./build.sh --deb
+
+# Raspberry Pi 4/5 (64-bit OS) — full arm64 release
+./setup-build-env.sh
+./build.sh --deb
+
+# Optional: arm64 server binary only, from x86 PC
+./setup-build-env.sh --cross-arm64
+./build.sh --cross-arm64
 ```
 
 ### Building for Windows
 
-To cross-compile for Windows from Linux:
+Cross-compile for Windows x64 from Linux:
 
 ```bash
-# Install Windows cross-compilation tools
 ./setup-build-env.sh --windows
-
-# Build Windows executables
-./build.sh --windows          # Server only (~600KB)
-
-# Or with admin GUI (requires wxWidgets, ~10-15 min one-time setup)
-./build.sh --windows-wxwidgets  # One-time wxWidgets build
-./build.sh --windows-full       # Server + Admin GUI (~13MB)
+./build.sh --windows-only                # Server only (~600KB)
+./build.sh --windows-wxwidgets           # One-time wxWidgets build (x64)
+./build.sh --windows-only --windows-full # Server + Admin GUI (~13MB)
+./build.sh --windows-only --zip          # + zip and NSIS installer
 ```
 
-**Output:** Binaries are placed in `releases/windows/`
+For a full release including Linux:
+
+```bash
+./build.sh --windows --zip    # Linux + Windows x64 + zip + NSIS
+./build.sh --all-full         # Linux + Windows x64 + deb + zip + NSIS
+```
+
+**Output:** `releases/windows/x64/` (installer: `sharefs-server_*-setup.exe`, zip: `sharefs-server_*.zip`)
+
+**Windows on ARM** (`releases/windows/arm64/`):
+
+```bash
+./build.sh --windows-wxwidgets --windows-arch arm64   # one-time, needs MinGW aarch64 toolchain
+./build.sh --windows-only --windows-arch arm64 --zip
+```
+
+MinGW for aarch64 is **not in apt** — you need a separate toolchain ([mingw-woarm64-build](https://github.com/Windows-on-ARM-Experiments/mingw-woarm64-build)) or a native build on Windows ARM hardware. ARM64 releases are zip-only (no NSIS installer).
+
+### Continuous integration
+
+GitHub Actions (`.github/workflows/build.yml`) runs on every push and pull request:
+
+| Job | Output |
+|-----|--------|
+| `linux-amd64` | `releases/linux/amd64/` + `.deb`, tests |
+| `linux-arm64` | `releases/linux/arm64/` + `.deb`, tests (native ARM runner) |
+| `linux-arm64-cross` | Smoke test: cross-compiled arm64 server |
+| `windows-x64` | `releases/windows/x64/` zip (+ NSIS on tags) |
+
+**Publishing a release:** push a version tag (e.g. `v0.1.1`). The workflow builds full Linux amd64/arm64 packages, a complete Windows x64 zip with admin GUI (wxWidgets cached after the first run), NSIS installer, and attaches everything to a GitHub Release automatically.
+
+```bash
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+Windows on ARM is not built in CI (no MinGW aarch64 on hosted runners).
 
 ### Manual Build (Advanced)
 
@@ -103,16 +210,24 @@ cmake --build build -j$(nproc)
 # Create deb package
 cd build && cpack -G DEB
 
-# Windows cross-compile (server only)
-cmake -S . -B build-win -DCMAKE_TOOLCHAIN_FILE=mingw-w64-x86_64.cmake -DSFS_BUILD_ADMIN=OFF
+# Windows cross-compile (server only, x64)
+cmake -S . -B build-win \
+  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/mingw-w64-x86_64.cmake \
+  -DSFS_BUILD_ADMIN=OFF
 cmake --build build-win -j$(nproc)
+
+# Linux arm64 cross-compile (server only, from amd64 host)
+cmake -S . -B build \
+  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/linux-aarch64-gnu.cmake \
+  -DSFS_BUILD_ADMIN=OFF
+cmake --build build -j$(nproc)
 ```
 
 ---
 
 ## Running
 
-**Note for WiFi users:** WiFi usually requires binding to a specific IP. Run `ipconfig` (Windows) or `ip addr` (Linux) to find your adapter's IP address and add it to the `bind_ip` setting in `sharefs.conf` (or usage the Admin GUI).
+**Note for WiFi users:** WiFi usually requires binding to a specific IP. Run `ipconfig` (Windows) or `ip addr` (Linux) to find your adapter's IP address and add it to the `bind_ip` setting in `sharefs.conf` (or use the Admin GUI).
 
 ### Linux (Debian/Ubuntu Package)
 
@@ -194,12 +309,16 @@ The **ShareFS Admin** GUI allows easy configuration and control:
 If running directly from the build output (e.g., for testing):
 
 ```bash
-# Linux
-./releases/linux/sharefs-server releases/linux/sharefs.conf
-./releases/linux/sharefs-admin
+# Linux (amd64 PC)
+./releases/linux/amd64/sharefs-server releases/linux/amd64/sharefs.conf
+./releases/linux/amd64/sharefs-admin
 
-# Windows
-releases/windows/sharefs-server.exe releases/windows/sharefs.conf
+# Linux (Raspberry Pi / arm64)
+./releases/linux/arm64/sharefs-server releases/linux/arm64/sharefs.conf
+./releases/linux/arm64/sharefs-admin
+
+# Windows (x64)
+releases/windows/x64/sharefs-server.exe releases/windows/x64/sharefs.conf
 ```
 
 ---
@@ -243,10 +362,10 @@ png = B60
 
 | Setting             | Description                                             | Default         |
 |---------------------|---------------------------------------------------------|-----------------|
-| `log_level`         | Logging verbosity: `debug`, `info`, `warn`, `error`     | `info`          |
+| `log_level`         | `none`, `error`, `info`, `debug`, or `protocol`       | `info`          |
 | `broadcast_interval`| Seconds between Freeway broadcasts (0 to disable)       | `3`             |
-| `access_plus`       | Enable Access+ authentication support                   | `false`         |
-| `bind_ip`           | IP address to bind to (required for Windows WiFi)       | `0.0.0.0` (all) |
+| `access_plus`       | Enable Access+ authentication support                   | `true`          |
+| `bind_ip`           | IP address to bind to (omit for all interfaces)       | all interfaces  |
 
 ### Share Attributes
 
@@ -272,6 +391,8 @@ Map file extensions to RISC OS filetypes (3-character hex codes):
 
 The Admin GUI includes common default mappings when creating a new configuration.
 
+For protocol-level detail, see [docs/protocol.md](docs/protocol.md).
+
 ---
 
 ## Troubleshooting
@@ -292,7 +413,7 @@ By default on Linux the server writes to `/var/log/sharefs/sharefs.log`. If that
 
 ### Admin GUI won't start
 
-Make sure wxWidgets is installed (see Prerequisites section for your distribution).
+Install wxWidgets development packages before building (see **Building** above). On Debian/Ubuntu: `libwxgtk3.2-dev`.
 
 ---
 

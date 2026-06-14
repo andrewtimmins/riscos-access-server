@@ -2,7 +2,12 @@
 # Built with NSIS (Nullsoft Scriptable Install System)
 
 !define PRODUCT_NAME "ShareFS Server"
+!ifndef PRODUCT_VERSION
 !define PRODUCT_VERSION "0.1.1"
+!endif
+!ifndef WINDOWS_RELEASE_DIR
+!define WINDOWS_RELEASE_DIR "releases\windows\x64"
+!endif
 !define PRODUCT_PUBLISHER "Andrew Timmins"
 !define PRODUCT_WEB_SITE "https://github.com/andrewtimmins/riscos-access-server"
 !define PRODUCT_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
@@ -54,7 +59,7 @@ ShowUnInstDetails show
 !insertmacro MUI_LANGUAGE "English"
 
 # Version information
-VIProductVersion "0.1.1.0"
+VIProductVersion "${PRODUCT_VERSION}.0"
 VIAddVersionKey "ProductName" "${PRODUCT_NAME}"
 VIAddVersionKey "ProductVersion" "${PRODUCT_VERSION}"
 VIAddVersionKey "CompanyName" "${PRODUCT_PUBLISHER}"
@@ -72,9 +77,9 @@ Section "Core Files" SecCore
   SetOutPath "$INSTDIR"
   
   # Install executables
-  File "releases\windows\sharefs-server.exe"
-  File "releases\windows\sharefs-service.exe"
-  File "releases\windows\sharefs-admin.exe"
+  File "${WINDOWS_RELEASE_DIR}\sharefs-server.exe"
+  File "${WINDOWS_RELEASE_DIR}\sharefs-service.exe"
+  File "${WINDOWS_RELEASE_DIR}\sharefs-admin.exe"
   
   # Install documentation (but not config - that goes to ProgramData)
   SetOutPath "$INSTDIR"
@@ -82,8 +87,8 @@ Section "Core Files" SecCore
   File "LICENSE"
   
   # Install firewall script if present
-  IfFileExists "releases\windows\configure-firewall-windows.bat" 0 +2
-    File "releases\windows\configure-firewall-windows.bat"
+  IfFileExists "${WINDOWS_RELEASE_DIR}\configure-firewall-windows.bat" 0 +2
+    File "${WINDOWS_RELEASE_DIR}\configure-firewall-windows.bat"
   
   # Create install directories
   CreateDirectory "$INSTDIR"
@@ -94,7 +99,7 @@ Section "Core Files" SecCore
   # Copy config to install dir if not exists (preserve existing config on upgrade)
   IfFileExists "$INSTDIR\sharefs.conf" PreserveSharefs InstallConfig
   InstallConfig:
-    File /oname=sharefs.conf "releases\windows\sharefs.conf"
+    File /oname=sharefs.conf "${WINDOWS_RELEASE_DIR}\sharefs.conf"
     DetailPrint "Installed default configuration to $INSTDIR\sharefs.conf"
     Goto ConfigDone
   PreserveSharefs:

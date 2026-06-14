@@ -1,0 +1,167 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-amd64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake
+          sudo apt-get install -y libwxgtk3.2-dev || sudo apt-get install -y libwxgtk3.0-gtk3-dev
+
+      - name: Build (amd64)
+        run: ./build.sh --deb
+
+      - name: Run tests
+        run: |
+          cd build
+          ctest --output-on-failure
+
+      - name: Upload amd64 release
+        uses: actions/upload-artifact@v4
+        with:
+          name: sharefs-linux-amd64
+          path: releases/linux/amd64/
+          if-no-files-found: error
+
+  linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake
+          sudo apt-get install -y libwxgtk3.2-dev || sudo apt-get install -y libwxgtk3.0-gtk3-dev
+
+      - name: Build (arm64 native)
+        run: ./build.sh --deb
+
+      - name: Run tests
+        run: |
+          cd build
+          ctest --output-on-failure
+
+      - name: Upload arm64 release
+        uses: actions/upload-artifact@v4
+        with:
+          name: sharefs-linux-arm64
+          path: releases/linux/arm64/
+          if-no-files-found: error
+
+  linux-arm64-cross:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross-compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake gcc-aarch64-linux-gnu
+
+      - name: Cross-compile server (arm64)
+        run: ./build.sh --cross-arm64
+
+      - name: Verify arm64 binary
+        run: file releases/linux/arm64/sharefs-server | grep -iE 'aarch64|ARM'
+
+  windows-x64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW and packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-mingw-w64-x86-64 \
+            g++-mingw-w64-x86-64 \
+            zip nsis
+
+      - name: Restore wxWidgets cache
+        id: wx-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/wxWidgets-mingw-x64/install
+          key: wxwidgets-mingw-x64-3.2.4-${{ runner.os }}
+          restore-keys: |
+            wxwidgets-mingw-x64-3.2.4-${{ runner.os }}-
+
+      - name: Build wxWidgets for MinGW (first run only)
+        if: steps.wx-cache.outputs.cache-hit != 'true' && (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+        run: ./build.sh --windows-wxwidgets
+
+      - name: Build Windows x64 (server + zip)
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v'))
+        run: ./build.sh --windows-only --zip
+
+      - name: Build Windows x64 (full release)
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        run: ./build.sh --windows-only --windows-full --zip
+
+      - name: Upload Windows x64 release
+        uses: actions/upload-artifact@v4
+        with:
+          name: sharefs-windows-x64
+          path: releases/windows/x64/
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [linux-amd64, linux-arm64, windows-x64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Linux amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sharefs-linux-amd64
+          path: release-assets/linux-amd64
+
+      - name: Download Linux arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sharefs-linux-arm64
+          path: release-assets/linux-arm64
+
+      - name: Download Windows x64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sharefs-windows-x64
+          path: release-assets/windows-x64
+
+      - name: Collect release assets
+        run: |
+          mkdir -p upload
+          shopt -s nullglob
+          cp release-assets/linux-amd64/*.deb upload/
+          cp release-assets/linux-arm64/*.deb upload/
+          cp release-assets/windows-x64/*.zip upload/
+          cp release-assets/windows-x64/*-setup.exe upload/
+          cp release-assets/linux-amd64/sharefs-server upload/sharefs-server-linux-amd64
+          cp release-assets/linux-amd64/sharefs-admin upload/sharefs-admin-linux-amd64
+          cp release-assets/linux-arm64/sharefs-server upload/sharefs-server-linux-arm64
+          cp release-assets/linux-arm64/sharefs-admin upload/sharefs-admin-linux-arm64
+          ls -la upload/
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: upload/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
