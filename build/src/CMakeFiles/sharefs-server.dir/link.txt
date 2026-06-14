@@ -1,0 +1,1 @@
+/usr/bin/cc "CMakeFiles/sharefs-server.dir/main.c.o" -o sharefs-server  libsfs.a 

@@ -1,4 +1,4 @@
-// RISC OS Access Server - Admin GUI Main Frame Implementation
+// ShareFS Server - Admin GUI Main Frame Implementation
 
 #include "MainFrame.h"
 #include "ServerPanel.h"
@@ -6,8 +6,9 @@
 #include "PrintersPanel.h"
 #include "MimePanel.h"
 #include "ControlPanel.h"
+#include "UiHelpers.h"
+#include <wx/aboutdlg.h>
 #include <wx/filename.h>
-#include <wx/hyperlink.h>
 #include <wx/msgdlg.h>
 
 wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
@@ -23,8 +24,9 @@ wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
 wxEND_EVENT_TABLE()
 
 MainFrame::MainFrame(const wxString& title)
-    : wxFrame(nullptr, wxID_ANY, title, wxDefaultPosition, wxSize(900, 650))
+    : wxFrame(nullptr, wxID_ANY, title, wxDefaultPosition, wxSize(960, 720))
 {
+    SetMinSize(wxSize(820, 600));
     CreateMenuBar();
     CreateToolBar();
     
@@ -97,7 +99,7 @@ void MainFrame::CreateToolBar() {
 }
 
 void MainFrame::UpdateTitle() {
-    wxString title = "Access/ShareFS Admin";
+    wxString title = "ShareFS Admin";
     if (!m_configPath.empty()) {
         wxFileName fn(m_configPath);
         title += " - " + fn.GetFullName();
@@ -143,7 +145,7 @@ void MainFrame::LoadConfig(const std::string& path) {
 
 void MainFrame::SaveConfig() {
     if (m_configPath.empty()) {
-        m_configPath = "access.conf";
+        m_configPath = "sharefs.conf";
     }
 
     std::string error;
@@ -209,33 +211,31 @@ void MainFrame::OnClose(wxCloseEvent& event) {
     Destroy();
 }
 
+#ifndef SHAREFS_VERSION
+#define SHAREFS_VERSION "0.0.0"
+#endif
+#ifndef SHAREFS_HOMEPAGE
+#define SHAREFS_HOMEPAGE "https://github.com/andrewtimmins/riscos-access-server"
+#endif
+
 void MainFrame::OnAbout(wxCommandEvent& event) {
     wxUnusedVar(event);
 
-    wxDialog dlg(this, wxID_ANY, "About Access/ShareFS Admin",
-                 wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE);
+    wxAboutDialogInfo info;
+    info.SetName("ShareFS Admin");
+    info.SetVersion(SHAREFS_VERSION);
+    info.SetDescription(
+        "Configuration and control utility for ShareFS Server,\n"
+        "an Acorn ShareFS-compatible file server for Linux and Windows.\n\n"
+        "Components: sharefs-server, sharefs-admin, sharefs-service");
+    info.SetCopyright(wxString::Format("(C) 2025-%d Andrew Timmins",
+                                       wxDateTime::Now().GetYear()));
+    info.SetWebSite(SHAREFS_HOMEPAGE, "ShareFS Server on GitHub");
+    info.AddDeveloper("Andrew Timmins");
+    info.SetLicence(
+        "This program is free software: you can redistribute it and/or "
+        "modify it under the terms of the GNU General Public License "
+        "version 3 or later.");
 
-    wxBoxSizer* sizer = new wxBoxSizer(wxVERTICAL);
-
-    sizer->Add(new wxStaticText(&dlg, wxID_ANY,
-        "Access/ShareFS Server Admin\n\n"
-        "Administration and control utility for\n"
-        "the Access/ShareFS server.\n\n"
-        "Copyright \xC2\xA9 Andrew Timmins, 2025."),
-        0, wxALL, 15);
-
-    wxBoxSizer* licRow = new wxBoxSizer(wxHORIZONTAL);
-    licRow->Add(new wxStaticText(&dlg, wxID_ANY, "Licensed under the "),
-                0, wxALIGN_CENTRE_VERTICAL);
-    licRow->Add(new wxHyperlinkCtrl(&dlg, wxID_ANY,
-        "GNU General Public License v3.0",
-        "https://www.gnu.org/licenses/gpl-3.0.html"),
-        0, wxALIGN_CENTRE_VERTICAL);
-    sizer->Add(licRow, 0, wxLEFT | wxRIGHT | wxBOTTOM, 15);
-
-    sizer->Add(dlg.CreateButtonSizer(wxOK), 0, wxEXPAND | wxBOTTOM, 10);
-
-    dlg.SetSizerAndFit(sizer);
-    dlg.Centre();
-    dlg.ShowModal();
+    wxAboutBox(info, this);
 }

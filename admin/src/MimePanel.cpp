@@ -1,7 +1,8 @@
-// RISC OS Access Server - Admin GUI MIME Panel
+// ShareFS Server - Admin GUI MIME Panel
 
 #include "MimePanel.h"
 #include "MainFrame.h"
+#include "UiHelpers.h"
 
 enum { ID_ADD_MIME = wxID_HIGHEST + 300, ID_REMOVE_MIME, ID_MIME_LIST };
 
@@ -12,33 +13,34 @@ MimePanel::MimePanel(wxWindow *parent, MainFrame *frame)
   // Title and buttons
   wxBoxSizer *headerSizer = new wxBoxSizer(wxHORIZONTAL);
   wxStaticText *title = new wxStaticText(this, wxID_ANY, "MIME Type Mappings");
-  wxFont titleFont = title->GetFont();
-  titleFont.SetPointSize(14);
-  titleFont.SetWeight(wxFONTWEIGHT_BOLD);
-  title->SetFont(titleFont);
-  headerSizer->Add(title, 1, wxALIGN_CENTER_VERTICAL);
+  ui::StyleSectionTitle(title);
+  headerSizer->Add(title, 1, wxALIGN_CENTER_VERTICAL | wxBOTTOM, 4);
 
   wxButton *addBtn = new wxButton(this, ID_ADD_MIME, "Add");
   wxButton *removeBtn = new wxButton(this, ID_REMOVE_MIME, "Remove");
   headerSizer->Add(addBtn, 0, wxLEFT, 5);
   headerSizer->Add(removeBtn, 0, wxLEFT, 5);
-  mainSizer->Add(headerSizer, 0, wxEXPAND | wxALL, 15);
+  mainSizer->Add(headerSizer, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 15);
+  mainSizer->AddSpacer(4);
 
-  // Description
   wxStaticText *desc =
       new wxStaticText(this, wxID_ANY,
                        "Map file extensions to RISC OS filetypes (hex values "
                        "like FFF for Text)");
-  desc->SetForegroundColour(wxColour(100, 100, 100));
-  mainSizer->Add(desc, 0, wxLEFT | wxRIGHT | wxBOTTOM, 15);
+  desc->SetForegroundColour(ui::MutedText(this));
+  mainSizer->Add(desc, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 15);
 
-  // Split view
   wxBoxSizer *contentSizer = new wxBoxSizer(wxHORIZONTAL);
 
-  m_list = new wxListCtrl(this, ID_MIME_LIST, wxDefaultPosition,
-                          wxSize(250, -1), wxLC_REPORT | wxLC_SINGLE_SEL);
-  m_list->InsertColumn(0, "Extension", wxLIST_FORMAT_LEFT, 100);
-  m_list->InsertColumn(1, "Filetype", wxLIST_FORMAT_LEFT, 100);
+  m_list = new wxListCtrl(this, ID_MIME_LIST, wxDefaultPosition, wxDefaultSize,
+                          wxLC_REPORT | wxLC_SINGLE_SEL);
+  m_list->SetMinSize(wxSize(260, 160));
+  m_list->InsertColumn(0, "Extension", wxLIST_FORMAT_LEFT, 120);
+  m_list->InsertColumn(1, "Filetype", wxLIST_FORMAT_LEFT, 120);
+  m_list->Bind(wxEVT_SIZE, [this](wxSizeEvent &e) {
+    e.Skip();
+    ui::ResizeListColumns(m_list);
+  });
   contentSizer->Add(m_list, 0, wxEXPAND | wxRIGHT, 10);
 
   // Detail panel
@@ -78,7 +80,7 @@ MimePanel::MimePanel(wxWindow *parent, MainFrame *frame)
                                         "  FF9 = Sprite\n"
                                         "  C85 = JPEG\n"
                                         "  B60 = PNG");
-  hint->SetForegroundColour(wxColour(100, 100, 100));
+  hint->SetForegroundColour(ui::MutedText(m_detailPanel));
   detailSizer->Add(hint, 0, wxTOP, 15);
 
   m_detailPanel->SetSizer(detailSizer);
@@ -94,9 +96,14 @@ MimePanel::MimePanel(wxWindow *parent, MainFrame *frame)
 
 void MimePanel::RefreshFromConfig() {
   RefreshList();
-  m_currentIndex = -1;
-  m_detailPanel->Hide();
-  Layout();
+  if (m_list->GetItemCount() > 0) {
+    m_list->SetItemState(0, wxLIST_STATE_SELECTED, wxLIST_STATE_SELECTED);
+    ShowDetails(0);
+  } else {
+    m_currentIndex = -1;
+    m_detailPanel->Hide();
+    Layout();
+  }
 }
 
 void MimePanel::RefreshList() {

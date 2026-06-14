@@ -1,7 +1,8 @@
-// RISC OS Access Server - Admin GUI Shares Panel
+// ShareFS Server - Admin GUI Shares Panel
 
 #include "SharesPanel.h"
 #include "MainFrame.h"
+#include "UiHelpers.h"
 #include <wx/dirdlg.h>
 #include <wx/statbox.h>
 
@@ -19,25 +20,27 @@ SharesPanel::SharesPanel(wxWindow *parent, MainFrame *frame)
   // Title and buttons
   wxBoxSizer *headerSizer = new wxBoxSizer(wxHORIZONTAL);
   wxStaticText *title = new wxStaticText(this, wxID_ANY, "Network Shares");
-  wxFont titleFont = title->GetFont();
-  titleFont.SetPointSize(14);
-  titleFont.SetWeight(wxFONTWEIGHT_BOLD);
-  title->SetFont(titleFont);
-  headerSizer->Add(title, 1, wxALIGN_CENTER_VERTICAL);
+  ui::StyleSectionTitle(title);
+  headerSizer->Add(title, 1, wxALIGN_CENTER_VERTICAL | wxBOTTOM, 4);
 
   wxButton *addBtn = new wxButton(this, ID_ADD_SHARE, "Add");
   wxButton *removeBtn = new wxButton(this, ID_REMOVE_SHARE, "Remove");
   headerSizer->Add(addBtn, 0, wxLEFT, 5);
   headerSizer->Add(removeBtn, 0, wxLEFT, 5);
-  mainSizer->Add(headerSizer, 0, wxEXPAND | wxALL, 15);
+  mainSizer->Add(headerSizer, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 15);
+  mainSizer->AddSpacer(4);
 
   // Split view: list + details
   wxBoxSizer *contentSizer = new wxBoxSizer(wxHORIZONTAL);
 
-  // List
-  m_list = new wxListCtrl(this, ID_SHARE_LIST, wxDefaultPosition,
-                          wxSize(200, -1), wxLC_REPORT | wxLC_SINGLE_SEL);
+  m_list = new wxListCtrl(this, ID_SHARE_LIST, wxDefaultPosition, wxDefaultSize,
+                          wxLC_REPORT | wxLC_SINGLE_SEL);
+  m_list->SetMinSize(wxSize(260, 160));
   m_list->InsertColumn(0, "Share Name", wxLIST_FORMAT_LEFT, 180);
+  m_list->Bind(wxEVT_SIZE, [this](wxSizeEvent &e) {
+    e.Skip();
+    ui::ResizeListColumns(m_list);
+  });
   contentSizer->Add(m_list, 0, wxEXPAND | wxRIGHT, 10);
 
   // Detail panel
@@ -146,9 +149,14 @@ SharesPanel::SharesPanel(wxWindow *parent, MainFrame *frame)
 
 void SharesPanel::RefreshFromConfig() {
   RefreshList();
-  m_currentIndex = -1;
-  m_detailPanel->Hide();
-  Layout();
+  if (m_list->GetItemCount() > 0) {
+    m_list->SetItemState(0, wxLIST_STATE_SELECTED, wxLIST_STATE_SELECTED);
+    ShowDetails(0);
+  } else {
+    m_currentIndex = -1;
+    m_detailPanel->Hide();
+    Layout();
+  }
 }
 
 void SharesPanel::RefreshList() {
@@ -175,11 +183,11 @@ void SharesPanel::ShowDetails(int index) {
   m_passwordCtrl->SetValue(share.password);
   m_defaultTypeCtrl->SetValue(share.default_type);
 
-  m_attrProtected->SetValue(share.attributes & RAS_ATTR_PROTECTED);
-  m_attrReadonly->SetValue(share.attributes & RAS_ATTR_READONLY);
-  m_attrHidden->SetValue(share.attributes & RAS_ATTR_HIDDEN);
-  m_attrSubdir->SetValue(share.attributes & RAS_ATTR_SUBDIR);
-  m_attrCdrom->SetValue(share.attributes & RAS_ATTR_CDROM);
+  m_attrProtected->SetValue(share.attributes & SFS_ATTR_PROTECTED);
+  m_attrReadonly->SetValue(share.attributes & SFS_ATTR_READONLY);
+  m_attrHidden->SetValue(share.attributes & SFS_ATTR_HIDDEN);
+  m_attrSubdir->SetValue(share.attributes & SFS_ATTR_SUBDIR);
+  m_attrCdrom->SetValue(share.attributes & SFS_ATTR_CDROM);
 
   m_detailPanel->Show();
   m_detailPanel->Layout(); // Force child panel layout
@@ -202,15 +210,15 @@ void SharesPanel::SaveCurrentDetails() {
 
   share.attributes = 0;
   if (m_attrProtected->GetValue())
-    share.attributes |= RAS_ATTR_PROTECTED;
+    share.attributes |= SFS_ATTR_PROTECTED;
   if (m_attrReadonly->GetValue())
-    share.attributes |= RAS_ATTR_READONLY;
+    share.attributes |= SFS_ATTR_READONLY;
   if (m_attrHidden->GetValue())
-    share.attributes |= RAS_ATTR_HIDDEN;
+    share.attributes |= SFS_ATTR_HIDDEN;
   if (m_attrSubdir->GetValue())
-    share.attributes |= RAS_ATTR_SUBDIR;
+    share.attributes |= SFS_ATTR_SUBDIR;
   if (m_attrCdrom->GetValue())
-    share.attributes |= RAS_ATTR_CDROM;
+    share.attributes |= SFS_ATTR_CDROM;
 
   // Update list display
   m_list->SetItemText(m_currentIndex, share.name);

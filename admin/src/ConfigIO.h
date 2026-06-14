@@ -1,4 +1,4 @@
-// RISC OS Access Server - Admin GUI Config I/O Header
+// ShareFS Server - Admin GUI Config I/O Header
 
 #ifndef CONFIGIO_H
 #define CONFIGIO_H
@@ -8,11 +8,11 @@
 #include <vector>
 
 // Share attribute flags (matching server)
-#define RAS_ATTR_PROTECTED 0x01
-#define RAS_ATTR_READONLY 0x02
-#define RAS_ATTR_HIDDEN 0x04
-#define RAS_ATTR_SUBDIR 0x08
-#define RAS_ATTR_CDROM 0x10
+#define SFS_ATTR_PROTECTED 0x01
+#define SFS_ATTR_READONLY 0x02
+#define SFS_ATTR_HIDDEN 0x04
+#define SFS_ATTR_SUBDIR 0x08
+#define SFS_ATTR_CDROM 0x10
 
 struct ShareConfig {
   std::string name;
@@ -43,9 +43,9 @@ struct ServerConfig {
   std::string bind_ip;
 };
 
-class RasConfig {
+class SfsConfig {
 public:
-  RasConfig() = default;
+  SfsConfig() = default;
 
   bool Load(const std::string &path, std::string &error);
   bool Save(const std::string &path, std::string &error);

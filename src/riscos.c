@@ -1,4 +1,4 @@
-// RISC OS Access/ShareFS Server - RISC OS Type Conversion
+// ShareFS Server - RISC OS Type Conversion
 // Author: Andrew Timmins
 // License: GPL-3.0-only
 
@@ -41,19 +41,19 @@ static const struct {
                     {"!Help", 0xFFF},      // Text
                     {NULL, 0}};
 
-uint32_t ras_filetype_from_ext(const char *filename, const ras_config *cfg) {
+uint32_t sfs_filetype_from_ext(const char *filename, const sfs_config *cfg) {
   if (!filename)
-    return RAS_FILETYPE_DATA;
+    return SFS_FILETYPE_DATA;
 
   // Check for ,xxx suffix first (takes priority)
-  int suffix_type = ras_filetype_from_suffix(filename);
+  int suffix_type = sfs_filetype_from_suffix(filename);
   if (suffix_type >= 0) {
     return (uint32_t)suffix_type;
   }
 
   const char *dot = strrchr(filename, '.');
   if (!dot || dot == filename)
-    return RAS_FILETYPE_DATA;
+    return SFS_FILETYPE_DATA;
   dot++;
 
   char ext_lower[16];
@@ -86,10 +86,10 @@ uint32_t ras_filetype_from_ext(const char *filename, const ras_config *cfg) {
     }
   }
 
-  return RAS_FILETYPE_DATA;
+  return SFS_FILETYPE_DATA;
 }
 
-int ras_filetype_from_suffix(const char *filename) {
+int sfs_filetype_from_suffix(const char *filename) {
   if (!filename)
     return -1;
 
@@ -114,14 +114,14 @@ int ras_filetype_from_suffix(const char *filename) {
   return (int)strtol(suffix + 1, NULL, 16);
 }
 
-void ras_strip_type_suffix(const char *filename, char *out_buf, size_t out_sz) {
+void sfs_strip_type_suffix(const char *filename, char *out_buf, size_t out_sz) {
   if (!filename || !out_buf || out_sz == 0)
     return;
 
   size_t len = strlen(filename);
 
   // Check if there's a ,xxx suffix
-  if (len >= 4 && ras_filetype_from_suffix(filename) >= 0) {
+  if (len >= 4 && sfs_filetype_from_suffix(filename) >= 0) {
     // Strip the suffix
     size_t copy_len = len - 4;
     if (copy_len >= out_sz)
@@ -138,7 +138,7 @@ void ras_strip_type_suffix(const char *filename, char *out_buf, size_t out_sz) {
   }
 }
 
-void ras_append_type_suffix(const char *path, uint32_t filetype, char *out,
+void sfs_append_type_suffix(const char *path, uint32_t filetype, char *out,
                             size_t out_sz) {
   if (!path || !out || out_sz == 0)
     return;
@@ -147,7 +147,7 @@ void ras_append_type_suffix(const char *path, uint32_t filetype, char *out,
   size_t path_len = strlen(path);
   size_t base_len = path_len;
 
-  if (path_len >= 4 && ras_filetype_from_suffix(path) >= 0) {
+  if (path_len >= 4 && sfs_filetype_from_suffix(path) >= 0) {
     base_len = path_len - 4;
   }
 
@@ -164,7 +164,7 @@ void ras_append_type_suffix(const char *path, uint32_t filetype, char *out,
   snprintf(out + base_len, out_sz - base_len, ",%03x", filetype & 0xFFF);
 }
 
-int ras_path_is_safe(const char *path) {
+int sfs_path_is_safe(const char *path) {
   if (!path)
     return 0;
 

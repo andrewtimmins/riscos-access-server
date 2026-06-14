@@ -1,4 +1,4 @@
-// RISC OS Access/ShareFS Server - File Operations (full impl)
+// ShareFS Server - File Operations (full impl)
 // Author: Andrew Timmins
 // License: GPL-3.0-only
 
@@ -148,16 +148,16 @@ static int safe_rename_cross(const char *oldp, const char *newp) {
 // Helpers for little-endian encoding
 static unsigned int read_u32(const unsigned char *p);
 static void write_u32(unsigned char *p, unsigned int v);
-static void send_f_pkt(ras_net *net, uint32_t code, const void *data,
+static void send_f_pkt(sfs_net *net, uint32_t code, const void *data,
                        uint16_t dlen, const char *addr,
                        unsigned short port);
 
 typedef struct {
   char addr[64];
   unsigned short port;
-} ras_client_entry;
+} sfs_client_entry;
 
-static ras_client_entry client_list[MAX_CLIENTS];
+static sfs_client_entry client_list[MAX_CLIENTS];
 static size_t client_count = 0;
 
 static void add_client(const char *addr, unsigned short port) {
@@ -177,11 +177,11 @@ static void add_client(const char *addr, unsigned short port) {
   client_count++;
 }
 
-static void broadcast_deadhandles(ras_net *net, ras_handle_table *handles) {
+static void broadcast_deadhandles(sfs_net *net, sfs_handle_table *handles) {
   if (!net || !handles)
     return;
   size_t dead_count = 0;
-  const int *dead = ras_handles_get_dead(handles, &dead_count);
+  const int *dead = sfs_handles_get_dead(handles, &dead_count);
   if (!dead || dead_count == 0)
     return;
 
@@ -201,12 +201,12 @@ static void broadcast_deadhandles(ras_net *net, ras_handle_table *handles) {
   }
 
   free(dh);
-  ras_handles_clear_dead(handles);
+  sfs_handles_clear_dead(handles);
 }
 
 // States for RREAD ping-pong protocol
-#define RAS_READ_STATE_WAIT_DATA_ACK 0
-#define RAS_READ_STATE_WAIT_STATUS_ACK 1
+#define SFS_READ_STATE_WAIT_DATA_ACK 0
+#define SFS_READ_STATE_WAIT_STATUS_ACK 1
 
 typedef struct {
   int active;
@@ -256,7 +256,7 @@ static void expire_stale_pending_reads(void) {
   for (int i = 0; i < MAX_PENDING_READS; i++) {
     if (pending_reads[i].active &&
         now - pending_reads[i].started_at > PENDING_READ_TIMEOUT_SECS) {
-      ras_log(RAS_LOG_DEBUG,
+      sfs_log(SFS_LOG_DEBUG,
               "Expiring stale pending read for handle %d (idle %lds)",
               pending_reads[i].handle_id,
               (long)(now - pending_reads[i].started_at));
@@ -293,17 +293,17 @@ static int mkpath(const char *path) {
   for (char *p = tmp + 1; *p; p++) {
     if (*p == '/') {
       *p = '\0';
-      if (ras_mkdir(tmp) != 0 && errno != EEXIST) {
+      if (sfs_mkdir(tmp) != 0 && errno != EEXIST) {
         return -1;
       }
       *p = '/';
     }
   }
-  return ras_mkdir(tmp);
+  return sfs_mkdir(tmp);
 }
 
 // Send 'w' packet to request data from client
-static void send_w_pkt(ras_net *net, const unsigned char *rid, uint32_t rel_pos,
+static void send_w_pkt(sfs_net *net, const unsigned char *rid, uint32_t rel_pos,
                        uint32_t rel_end, const char *addr,
                        unsigned short port) {
   // Format: w + rid(3) + pos(4) + zero(4) + end(4)
@@ -315,9 +315,9 @@ static void send_w_pkt(ras_net *net, const unsigned char *rid, uint32_t rel_pos,
   write_u32(pkt + 4, rel_pos);
   write_u32(pkt + 8, 0);
   write_u32(pkt + 12, rel_end);
-  ras_log(RAS_LOG_DEBUG, "Sending w-pkt: rel_pos=%u rel_end=%u", rel_pos,
+  sfs_log(SFS_LOG_DEBUG, "Sending w-pkt: rel_pos=%u rel_end=%u", rel_pos,
           rel_end);
-  ras_net_sendto(net->rpc, pkt, sizeof(pkt), addr, port);
+  sfs_net_sendto(net->rpc, pkt, sizeof(pkt), addr, port);
 }
 
 // (Filename encoding helpers moved to names.c / names.h)
@@ -357,7 +357,7 @@ static int build_host_path_from_ro(const char *share_path, const char *rest,
     seg[seglen] = '\0';
 
     char encoded[3 * sizeof(seg) + 1];
-    if (ras_encode_host_name(seg, encoded, sizeof(encoded)) != 0)
+    if (sfs_encode_host_name(seg, encoded, sizeof(encoded)) != 0)
       return -1;
 
     size_t enc_len = strlen(encoded);
@@ -374,7 +374,7 @@ static int build_host_path_from_ro(const char *share_path, const char *rest,
   return 0;
 }
 
-static int resolve_path(const ras_config *cfg, const char *ro_path, char *out,
+static int resolve_path(const sfs_config *cfg, const char *ro_path, char *out,
                         size_t out_sz) {
   if (!cfg || !ro_path || !out || out_sz == 0)
     return -1;
@@ -384,7 +384,7 @@ static int resolve_path(const ras_config *cfg, const char *ro_path, char *out,
   const char *dot = strchr(ro_path, '.');
   size_t share_len = dot ? (size_t)(dot - ro_path) : strlen(ro_path);
 
-  ras_log(RAS_LOG_DEBUG, "resolve_path: ro_path='%s' share_len=%zu", ro_path,
+  sfs_log(SFS_LOG_DEBUG, "resolve_path: ro_path='%s' share_len=%zu", ro_path,
           share_len);
 
   for (size_t i = 0; i < cfg->share_count; ++i) {
@@ -402,21 +402,21 @@ static int resolve_path(const ras_config *cfg, const char *ro_path, char *out,
           0)
         return -1;
 
-      ras_log(RAS_LOG_DEBUG, "resolve_path: resolved to '%s'", out);
+      sfs_log(SFS_LOG_DEBUG, "resolve_path: resolved to '%s'", out);
 
       // Safety check on final path - skip the leading '/' separator
       const char *rel = out + strlen(cfg->shares[i].path);
       if (*rel == '/')
         rel++; // Skip separator
-      if (!ras_path_is_safe(rel)) {
-        ras_log(RAS_LOG_DEBUG, "resolve_path: safety check failed on '%s'",
+      if (!sfs_path_is_safe(rel)) {
+        sfs_log(SFS_LOG_DEBUG, "resolve_path: safety check failed on '%s'",
                 rel);
         return -1;
       }
       return 0;
     }
   }
-  ras_log(RAS_LOG_DEBUG, "resolve_path: no matching share found");
+  sfs_log(SFS_LOG_DEBUG, "resolve_path: no matching share found");
   return -1;
 }
 
@@ -463,7 +463,7 @@ static int find_file_with_suffix(const char *base_path, char *out,
     if (ent_len == filename_len + 4 &&
         strncasecmp(ent->d_name, filename, filename_len) == 0 &&
         ent->d_name[filename_len] == ',' &&
-        ras_filetype_from_suffix(ent->d_name) >= 0) {
+        sfs_filetype_from_suffix(ent->d_name) >= 0) {
 
       snprintf(out, out_sz, "%s/%s", dir_path, ent->d_name);
       closedir(d);
@@ -475,15 +475,15 @@ static int find_file_with_suffix(const char *base_path, char *out,
   return -1;
 }
 
-static void send_err_pkt(ras_net *net, const unsigned char *rid, int code,
+static void send_err_pkt(sfs_net *net, const unsigned char *rid, int code,
                          const char *addr, unsigned short port) {
   unsigned char pkt[8] = {'E', rid[0], rid[1], rid[2], 0, 0, 0, 0};
   pkt[4] = (unsigned char)(code & 0xFF);
-  ras_log(RAS_LOG_PROTOCOL, "Sending E-pkt: error=%d", code);
-  ras_net_sendto(net->rpc, pkt, sizeof(pkt), addr, port);
+  sfs_log(SFS_LOG_PROTOCOL, "Sending E-pkt: error=%d", code);
+  sfs_net_sendto(net->rpc, pkt, sizeof(pkt), addr, port);
 }
 
-static void send_r_pkt(ras_net *net, const unsigned char *rid, const void *data,
+static void send_r_pkt(sfs_net *net, const unsigned char *rid, const void *data,
                        size_t dlen, const char *addr, unsigned short port) {
   unsigned char header[4] = {'R', rid[0], rid[1], rid[2]};
   struct {
@@ -495,12 +495,12 @@ static void send_r_pkt(ras_net *net, const unsigned char *rid, const void *data,
   memcpy(pkt.h, header, 4);
   if (data && dlen)
     memcpy(pkt.p, data, dlen);
-  ras_log(RAS_LOG_PROTOCOL, "Sending R-pkt: %zu bytes", dlen);
-  ras_net_sendto(net->rpc, &pkt, 4 + dlen, addr, port);
+  sfs_log(SFS_LOG_PROTOCOL, "Sending R-pkt: %zu bytes", dlen);
+  sfs_net_sendto(net->rpc, &pkt, 4 + dlen, addr, port);
 }
 
 // Send an unsolicited F packet (e.g., RDEADHANDLES broadcast)
-static void send_f_pkt(ras_net *net, uint32_t code, const void *data,
+static void send_f_pkt(sfs_net *net, uint32_t code, const void *data,
                        uint16_t dlen, const char *addr,
                        unsigned short port) {
   if (!net)
@@ -521,19 +521,19 @@ static void send_f_pkt(ras_net *net, uint32_t code, const void *data,
   if (data && copy_len)
     memcpy(pkt + sizeof(header), data, copy_len);
 
-  ras_net_sendto(net->rpc, pkt, sizeof(header) + copy_len, addr, port);
+  sfs_net_sendto(net->rpc, pkt, sizeof(header) + copy_len, addr, port);
 }
 
-static void send_d_pkt_with_offset(ras_net *net, const unsigned char *rid,
+static void send_d_pkt_with_offset(sfs_net *net, const unsigned char *rid,
                                    uint32_t offset, const void *data,
                                    size_t dlen, const char *addr,
                                    unsigned short port) {
   if (dlen > 0)
-    ras_log(RAS_LOG_DEBUG,
+    sfs_log(SFS_LOG_DEBUG,
             "RREAD: SEND PAYLOAD RID=%02x%02x%02x Offset=%u Len=%zu", rid[0],
             rid[1], rid[2], offset, dlen);
   else
-    ras_log(RAS_LOG_DEBUG, "RREAD: SEND STATUS RID=%02x%02x%02x Offset=%u",
+    sfs_log(SFS_LOG_DEBUG, "RREAD: SEND STATUS RID=%02x%02x%02x Offset=%u",
             rid[0], rid[1], rid[2], offset);
 
   unsigned char header[8];
@@ -553,22 +553,22 @@ static void send_d_pkt_with_offset(ras_net *net, const unsigned char *rid,
   if (data && dlen)
     memcpy(pkt.p, data, dlen);
 
-  ras_net_sendto(net->rpc, &pkt, 8 + dlen, addr, port);
+  sfs_net_sendto(net->rpc, &pkt, 8 + dlen, addr, port);
 }
 
 // Build FileDesc (20 bytes): load(4), exec(4), length(4), attrs(4),
 // type+flags(4)
 static void build_filedesc(unsigned char *out, const struct stat *st,
                            uint32_t filetype) {
-  uint64_t cs = ras_time_to_riscos(st->st_mtime);
-  uint32_t load = ras_make_load_addr(filetype, cs);
-  uint32_t exec = ras_make_exec_addr(cs);
+  uint64_t cs = sfs_time_to_riscos(st->st_mtime);
+  uint32_t load = sfs_make_load_addr(filetype, cs);
+  uint32_t exec = sfs_make_exec_addr(cs);
   // Cap file sizes >4 GB to 0xFFFFFFFF; the wire protocol is 32-bit.
   uint32_t len = S_ISDIR(st->st_mode) ? 0x800u
                : (st->st_size > (off_t)0xFFFFFFFF ? 0xFFFFFFFFu
                                                     : (uint32_t)st->st_size);
-  uint32_t attrs = ras_mode_to_attrs(st->st_mode);
-  uint32_t type = S_ISDIR(st->st_mode) ? RAS_TYPE_DIR : RAS_TYPE_FILE;
+  uint32_t attrs = sfs_mode_to_attrs(st->st_mode);
+  uint32_t type = S_ISDIR(st->st_mode) ? SFS_TYPE_DIR : SFS_TYPE_FILE;
 
   // Pack type with flags: type (bits 0-7), buffered (bit 8), interactive (bit
   // 9), noosgbpb (bit 10) Files are buffered (bit 8 = 1), not interactive (bit
@@ -582,22 +582,22 @@ static void build_filedesc(unsigned char *out, const struct stat *st,
   write_u32(out + 16, type_and_flags);
 }
 
-// Comparator for qsort on ras_dir_entry: case-insensitive alphabetical.
+// Comparator for qsort on sfs_dir_entry: case-insensitive alphabetical.
 static int compare_dir_entries(const void *a, const void *b) {
-  const ras_dir_entry *ea = (const ras_dir_entry *)a;
-  const ras_dir_entry *eb = (const ras_dir_entry *)b;
+  const sfs_dir_entry *ea = (const sfs_dir_entry *)a;
+  const sfs_dir_entry *eb = (const sfs_dir_entry *)b;
   return strcasecmp(ea->name ? ea->name : "", eb->name ? eb->name : "");
 }
 
 // Read a directory once, decode all entry names, sort, and attach to the
 // handle's cache.  After this the handle owns the entries array.
-static void populate_dir_listing(const char *host_path, const ras_config *cfg,
-                                 ras_handle_table *handles, int hid) {
+static void populate_dir_listing(const char *host_path, const sfs_config *cfg,
+                                 sfs_handle_table *handles, int hid) {
   DIR *d = opendir(host_path);
   if (!d)
     return;
 
-  ras_dir_entry *entries = NULL;
+  sfs_dir_entry *entries = NULL;
   size_t count = 0;
   size_t capacity = 0;
   struct dirent *ent;
@@ -607,7 +607,7 @@ static void populate_dir_listing(const char *host_path, const ras_config *cfg,
       continue;
 
     if (count >= 100000) {
-      ras_log(RAS_LOG_INFO, "populate_dir_listing: capped at 100000 entries in '%s'",
+      sfs_log(SFS_LOG_INFO, "populate_dir_listing: capped at 100000 entries in '%s'",
               host_path);
       break;
     }
@@ -620,21 +620,21 @@ static void populate_dir_listing(const char *host_path, const ras_config *cfg,
       continue;
 
     int filetype = S_ISDIR(st.st_mode)
-                       ? (int)RAS_FILETYPE_DIR
-                       : (int)ras_filetype_from_ext(ent->d_name, cfg);
+                       ? (int)SFS_FILETYPE_DIR
+                       : (int)sfs_filetype_from_ext(ent->d_name, cfg);
 
     char stripped[1024];
-    ras_strip_type_suffix(ent->d_name, stripped, sizeof(stripped));
+    sfs_strip_type_suffix(ent->d_name, stripped, sizeof(stripped));
     char ros_name[1024];
-    if (ras_decode_host_name(stripped, ros_name, sizeof(ros_name)) != 0) {
+    if (sfs_decode_host_name(stripped, ros_name, sizeof(ros_name)) != 0) {
       strncpy(ros_name, stripped, sizeof(ros_name) - 1);
       ros_name[sizeof(ros_name) - 1] = '\0';
     }
 
     if (count >= capacity) {
       size_t new_cap = capacity == 0 ? 64 : capacity * 2;
-      ras_dir_entry *p = (ras_dir_entry *)realloc(entries,
-                                                   new_cap * sizeof(ras_dir_entry));
+      sfs_dir_entry *p = (sfs_dir_entry *)realloc(entries,
+                                                   new_cap * sizeof(sfs_dir_entry));
       if (!p)
         break;
       entries = p;
@@ -651,19 +651,19 @@ static void populate_dir_listing(const char *host_path, const ras_config *cfg,
   closedir(d);
 
   if (count > 0)
-    qsort(entries, count, sizeof(ras_dir_entry), compare_dir_entries);
+    qsort(entries, count, sizeof(sfs_dir_entry), compare_dir_entries);
 
-  ras_handle_set_dir_listing(handles, hid, entries, count);
+  sfs_handle_set_dir_listing(handles, hid, entries, count);
 }
 
 // Serialize cached directory entries into an output buffer (wire format).
 // Returns the number of bytes written.
-static size_t build_dir_entries_from_cache(const ras_dir_entry *entries,
+static size_t build_dir_entries_from_cache(const sfs_dir_entry *entries,
                                            size_t count, unsigned char *out,
                                            size_t out_sz, size_t start_entry) {
   size_t offset = 0;
   for (size_t i = start_entry; i < count; i++) {
-    const ras_dir_entry *e = &entries[i];
+    const sfs_dir_entry *e = &entries[i];
     size_t name_len = e->name ? strlen(e->name) : 0;
     size_t entry_size = 20 + name_len + 1;
     entry_size = (entry_size + 3) & ~3u;
@@ -688,8 +688,8 @@ static size_t build_dir_entries_from_cache(const ras_dir_entry *entries,
 
 // Send a combined S+B response for directory catalogue.
 // Uses the pre-built sorted cache from the handle.
-static void send_catalogue_response(ras_net *net, const unsigned char *rid,
-                                    const ras_dir_entry *dir_entries,
+static void send_catalogue_response(sfs_net *net, const unsigned char *rid,
+                                    const sfs_dir_entry *dir_entries,
                                     size_t dir_count, int handle,
                                     const char *addr, unsigned short port) {
   // Entry buffer: 1800 bytes per packet (fits in a single Ethernet frame after
@@ -735,15 +735,15 @@ static void send_catalogue_response(ras_net *net, const unsigned char *rid,
   write_u32(pkt + offset, (uint32_t)entries_len); offset += 4;
   write_u32(pkt + offset, marker);        offset += 4;
 
-  ras_log(RAS_LOG_PROTOCOL,
+  sfs_log(SFS_LOG_PROTOCOL,
           "Sending S+B catalogue: %zu bytes, %zu entries_len, handle=%d",
           offset, entries_len, handle);
-  ras_net_sendto(net->rpc, pkt, offset, addr, port);
+  sfs_net_sendto(net->rpc, pkt, offset, addr, port);
 }
 
 // Send S+B response for RREADDIR pagination.
-static void send_readdir_response(ras_net *net, const unsigned char *rid,
-                                  const ras_dir_entry *dir_entries,
+static void send_readdir_response(sfs_net *net, const unsigned char *rid,
+                                  const sfs_dir_entry *dir_entries,
                                   size_t dir_count, int handle,
                                   size_t start_entry, const char *addr,
                                   unsigned short port) {
@@ -774,12 +774,12 @@ static void send_readdir_response(ras_net *net, const unsigned char *rid,
   write_u32(pkt + offset, (uint32_t)entries_len); offset += 4;
   write_u32(pkt + offset, 0xFFFFFFFF);            offset += 4;
 
-  ras_net_sendto(net->rpc, pkt, offset, addr, port);
+  sfs_net_sendto(net->rpc, pkt, offset, addr, port);
 }
 
 // Check if client is authorized to access a share (returns 1 if OK, 0 if
 // denied)
-static int check_share_auth(const ras_config *cfg, ras_auth_state *auth,
+static int check_share_auth(const sfs_config *cfg, sfs_auth_state *auth,
                             const char *client_ip, const char *ro_path) {
   if (!cfg || !ro_path)
     return 0;
@@ -794,14 +794,14 @@ static int check_share_auth(const ras_config *cfg, ras_auth_state *auth,
     if (name && strlen(name) == share_len &&
         strncasecmp(name, ro_path, share_len) == 0) {
       // Found the share - check if protected
-      if (!(cfg->shares[i].attributes & RAS_ATTR_PROTECTED)) {
+      if (!(cfg->shares[i].attributes & SFS_ATTR_PROTECTED)) {
         return 1; // Not protected, allow
       }
       // Protected - check if client is authenticated
-      if (auth && ras_auth_check(auth, client_ip, name)) {
+      if (auth && sfs_auth_check(auth, client_ip, name)) {
         return 1; // Authenticated
       }
-      ras_log(RAS_LOG_DEBUG,
+      sfs_log(SFS_LOG_DEBUG,
               "Auth denied: client %s not authenticated for share '%s'",
               client_ip ? client_ip : "?", name);
       return 0; // Denied
@@ -810,9 +810,9 @@ static int check_share_auth(const ras_config *cfg, ras_auth_state *auth,
   return 0; // Share not found
 }
 
-int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
-                   unsigned short port, const ras_config *cfg, ras_net *net,
-                   ras_handle_table *handles, ras_auth_state *auth) {
+int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
+                   unsigned short port, const sfs_config *cfg, sfs_net *net,
+                   sfs_handle_table *handles, sfs_auth_state *auth) {
   if (!buf || len < 4 || !net || !cfg || !handles)
     return -1;
 
@@ -822,7 +822,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
   if (pending_rename.active) {
     time_t now = time(NULL);
     if (now - pending_rename.started_at > 5) {
-      ras_log(RAS_LOG_INFO,
+      sfs_log(SFS_LOG_INFO,
               "RRENAME: timeout waiting for D-pkt rid=%02x%02x%02x old='%s'",
               pending_rename.rid[0], pending_rename.rid[1],
               pending_rename.rid[2], pending_rename.old_host_path);
@@ -847,7 +847,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
   for (size_t i = 0; i < hlen; ++i) {
     snprintf(hexdump + i * 3, 4, "%02x ", buf[i]);
   }
-  ras_log(RAS_LOG_PROTOCOL, "RPC cmd='%c' len=%zu: %s",
+  sfs_log(SFS_LOG_PROTOCOL, "RPC cmd='%c' len=%zu: %s",
           (cmd >= 32 && cmd < 127) ? cmd : '?', len, hexdump);
 
   char host_path[1024];
@@ -870,10 +870,10 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     const char *path = (has_path && len > 12) ? (const char *)(buf + 12) : "";
 
     if (has_path) {
-      ras_log(RAS_LOG_PROTOCOL, "A-cmd code=%u handle=%u path='%s'", code,
+      sfs_log(SFS_LOG_PROTOCOL, "A-cmd code=%u handle=%u path='%s'", code,
               handle, path);
     } else {
-      ras_log(RAS_LOG_PROTOCOL, "A-cmd code=%u handle=%u (handle-based)", code,
+      sfs_log(SFS_LOG_PROTOCOL, "A-cmd code=%u handle=%u (handle-based)", code,
               handle);
     }
 
@@ -903,8 +903,8 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         break;
       }
       uint32_t filetype = S_ISDIR(st.st_mode)
-                              ? RAS_FILETYPE_DIR
-                              : ras_filetype_from_ext(actual_path, cfg);
+                              ? SFS_FILETYPE_DIR
+                              : sfs_filetype_from_ext(actual_path, cfg);
       unsigned char desc[20];
       build_filedesc(desc, &st, filetype);
       send_r_pkt(net, rid, desc, sizeof(desc), addr, port);
@@ -938,19 +938,19 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
 
       // If it's a directory, return directory info
       if (S_ISDIR(st.st_mode)) {
-        uint32_t filetype = RAS_FILETYPE_DIR;
-        uint64_t cs = ras_time_to_riscos(st.st_mtime);
+        uint32_t filetype = SFS_FILETYPE_DIR;
+        uint64_t cs = sfs_time_to_riscos(st.st_mtime);
 
         int hid = 0, tok = 0;
-        if (ras_handles_add_ex(
-                handles, RAS_HANDLE_DIR, -1, actual_path,
-                ras_make_load_addr(filetype, cs), ras_make_exec_addr(cs), 0,
-                ras_mode_to_attrs(st.st_mode), &hid, &tok) != 0) {
+        if (sfs_handles_add_ex(
+                handles, SFS_HANDLE_DIR, -1, actual_path,
+                sfs_make_load_addr(filetype, cs), sfs_make_exec_addr(cs), 0,
+                sfs_mode_to_attrs(st.st_mode), &hid, &tok) != 0) {
           send_err_pkt(net, rid, EMFILE, addr, port);
           break;
         }
 
-        ras_handle_set_client(handles, hid, addr, port);
+        sfs_handle_set_client(handles, hid, addr, port);
         // Reply: FileDesc(20) + handle(4)
         unsigned char reply[24];
         build_filedesc(reply, &st, filetype);
@@ -958,7 +958,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         send_r_pkt(net, rid, reply, sizeof(reply), addr, port);
       } else {
         // It's a file
-        uint32_t filetype = ras_filetype_from_ext(actual_path, cfg);
+        uint32_t filetype = sfs_filetype_from_ext(actual_path, cfg);
         int flags = ((code == 0x01) ? O_RDONLY : O_RDWR) | O_BINARY;
 
         int fd = open(actual_path, flags);
@@ -967,20 +967,20 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
           break;
         }
         // filetype already calculated above
-        uint64_t cs = ras_time_to_riscos(st.st_mtime);
+        uint64_t cs = sfs_time_to_riscos(st.st_mtime);
 
         int hid = 0, tok = 0;
-        if (ras_handles_add_ex(handles, RAS_HANDLE_FILE, fd, actual_path,
-                               ras_make_load_addr(filetype, cs),
-                               ras_make_exec_addr(cs), (uint32_t)st.st_size,
-                               ras_mode_to_attrs(st.st_mode), &hid,
+        if (sfs_handles_add_ex(handles, SFS_HANDLE_FILE, fd, actual_path,
+                               sfs_make_load_addr(filetype, cs),
+                               sfs_make_exec_addr(cs), (uint32_t)st.st_size,
+                               sfs_mode_to_attrs(st.st_mode), &hid,
                                &tok) != 0) {
           close(fd);
           send_err_pkt(net, rid, EMFILE, addr, port);
           break;
         }
 
-        ras_handle_set_client(handles, hid, addr, port);
+        sfs_handle_set_client(handles, hid, addr, port);
         // Reply: FileDesc(20) + handle(4)
         unsigned char reply[24];
         build_filedesc(reply, &st, filetype);
@@ -988,8 +988,8 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         send_r_pkt(net, rid, reply, sizeof(reply), addr, port);
 
         // Store open flags for reopening (needed for Windows rename)
-        ras_handle *h = NULL;
-        if (ras_handles_get(handles, hid, &h) == 0 && h) {
+        sfs_handle *h = NULL;
+        if (sfs_handles_get(handles, hid, &h) == 0 && h) {
           h->open_flags = flags;
         }
       }
@@ -1008,12 +1008,12 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         break;
       }
       int hid = 0, tok = 0;
-      if (ras_handles_add_ex(handles, RAS_HANDLE_DIR, -1, host_path, 0, 0, 0,
-                             ras_mode_to_attrs(st.st_mode), &hid, &tok) != 0) {
+      if (sfs_handles_add_ex(handles, SFS_HANDLE_DIR, -1, host_path, 0, 0, 0,
+                             sfs_mode_to_attrs(st.st_mode), &hid, &tok) != 0) {
         send_err_pkt(net, rid, EMFILE, addr, port);
         break;
       }
-      ras_handle_set_client(handles, hid, addr, port);
+      sfs_handle_set_client(handles, hid, addr, port);
       // Pre-build the sorted directory listing so RREADDIR is O(1) per page.
       populate_dir_listing(host_path, cfg, handles, hid);
       // Return handle + token in R response
@@ -1042,7 +1042,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       *last_slash = '\0';
       mkpath(parent);
 
-      uint32_t filetype = ras_filetype_from_ext(host_path, cfg);
+      uint32_t filetype = sfs_filetype_from_ext(host_path, cfg);
       int flags = O_CREAT | O_TRUNC | O_RDWR | O_BINARY;
       int fd = open(host_path, flags, 0664);
       if (fd < 0) {
@@ -1052,22 +1052,22 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       struct stat st;
       fstat(fd, &st);
       // filetype already calculated
-      uint64_t cs = ras_time_to_riscos(time(NULL));
+      uint64_t cs = sfs_time_to_riscos(time(NULL));
 
       int hid = 0, tok = 0;
-      if (ras_handles_add_ex(
-              handles, RAS_HANDLE_FILE, fd, host_path,
-              ras_make_load_addr(filetype, cs), ras_make_exec_addr(cs), 0,
-              RAS_ATTR_R | RAS_ATTR_W | RAS_ATTR_r, &hid, &tok) != 0) {
+      if (sfs_handles_add_ex(
+              handles, SFS_HANDLE_FILE, fd, host_path,
+              sfs_make_load_addr(filetype, cs), sfs_make_exec_addr(cs), 0,
+              SFS_ATTR_R | SFS_ATTR_W | SFS_ATTR_r, &hid, &tok) != 0) {
         close(fd);
         send_err_pkt(net, rid, EMFILE, addr, port);
         break;
       }
 
-      ras_handle_set_client(handles, hid, addr, port);
+      sfs_handle_set_client(handles, hid, addr, port);
       // Store open flags (O_CREAT | O_TRUNC | O_RDWR)
-      ras_handle *h = NULL;
-      if (ras_handles_get(handles, hid, &h) == 0 && h) {
+      sfs_handle *h = NULL;
+      if (sfs_handles_get(handles, hid, &h) == 0 && h) {
         h->open_flags = flags;
       }
 
@@ -1092,15 +1092,15 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       struct stat st;
       stat(host_path, &st);
       int hid = 0, tok = 0;
-      if (ras_handles_add_ex(handles, RAS_HANDLE_DIR, -1, host_path, 0, 0, 0,
-                             ras_mode_to_attrs(st.st_mode), &hid, &tok) != 0) {
+      if (sfs_handles_add_ex(handles, SFS_HANDLE_DIR, -1, host_path, 0, 0, 0,
+                             sfs_mode_to_attrs(st.st_mode), &hid, &tok) != 0) {
         send_err_pkt(net, rid, EMFILE, addr, port);
         break;
       }
-      ras_handle_set_client(handles, hid, addr, port);
+      sfs_handle_set_client(handles, hid, addr, port);
       // Return FileDesc(20) + handle(4) = 24 bytes
       unsigned char reply[24];
-      build_filedesc(reply, &st, RAS_FILETYPE_DIR);
+      build_filedesc(reply, &st, SFS_FILETYPE_DIR);
       write_u32(reply + 20, (uint32_t)hid);
       send_r_pkt(net, rid, reply, sizeof(reply), addr, port);
       break;
@@ -1127,8 +1127,8 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       unsigned char reply[20];
       build_filedesc(reply, &st,
                      S_ISDIR(st.st_mode)
-                         ? RAS_FILETYPE_DIR
-                         : ras_filetype_from_ext(actual_path, cfg));
+                         ? SFS_FILETYPE_DIR
+                         : sfs_filetype_from_ext(actual_path, cfg));
       if (unlink(actual_path) != 0 && rmdir(actual_path) != 0) {
         send_err_pkt(net, rid, errno, addr, port);
         break;
@@ -1164,13 +1164,13 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       }
       // Map to Unix mode
       mode_t mode = 0;
-      if (new_attrs & RAS_ATTR_R)
+      if (new_attrs & SFS_ATTR_R)
         mode |= 0400;
-      if (new_attrs & RAS_ATTR_W)
+      if (new_attrs & SFS_ATTR_W)
         mode |= 0200;
-      if (new_attrs & RAS_ATTR_r)
+      if (new_attrs & SFS_ATTR_r)
         mode |= 0044;
-      if (new_attrs & RAS_ATTR_w)
+      if (new_attrs & SFS_ATTR_w)
         mode |= 0022;
       // Directories need execute bit to be accessible, and owner always needs
       // access
@@ -1185,8 +1185,8 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       unsigned char reply[20];
       build_filedesc(reply, &st,
                      S_ISDIR(st.st_mode)
-                         ? RAS_FILETYPE_DIR
-                         : ras_filetype_from_ext(actual_path, cfg));
+                         ? SFS_FILETYPE_DIR
+                         : sfs_filetype_from_ext(actual_path, cfg));
       send_r_pkt(net, rid, reply, sizeof(reply), addr, port);
       break;
     }
@@ -1202,8 +1202,8 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         send_err_pkt(net, rid, ENOENT, addr, port);
         break;
       }
-      ras_fsinfo fsinfo;
-      if (ras_get_fsinfo(host_path, &fsinfo) != 0) {
+      sfs_fsinfo fsinfo;
+      if (sfs_get_fsinfo(host_path, &fsinfo) != 0) {
         send_err_pkt(net, rid, errno, addr, port);
         break;
       }
@@ -1227,10 +1227,10 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       // handle is at buf+8
       // Response: 6 x 4 bytes (free_lo, free_hi, largest_lo, largest_hi,
       // total_lo, total_hi)
-      ras_fsinfo fsinfo;
+      sfs_fsinfo fsinfo;
       // Try to get filesystem info from first share
       if (cfg->share_count > 0) {
-        ras_get_fsinfo(cfg->shares[0].path, &fsinfo);
+        sfs_get_fsinfo(cfg->shares[0].path, &fsinfo);
       } else {
         memset(&fsinfo, 0, sizeof(fsinfo));
       }
@@ -1249,7 +1249,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     {
       // Format: cmd(1) + rid(3) + code(4) + handle(4) = 12 bytes
       int hid = (int)handle;
-      ras_handles_remove(handles, hid);
+      sfs_handles_remove(handles, hid);
       // Empty success reply
       send_r_pkt(net, rid, NULL, 0, addr, port);
       break;
@@ -1265,11 +1265,11 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       uint32_t offset = read_u32(buf + 12);
       uint32_t rlen = read_u32(buf + 16);
 
-      ras_log(RAS_LOG_DEBUG, "A-cmd RREAD: handle=%d offset=%u len=%u", hid,
+      sfs_log(SFS_LOG_DEBUG, "A-cmd RREAD: handle=%d offset=%u len=%u", hid,
               offset, rlen);
 
-      ras_handle *h = NULL;
-      if (ras_handles_get_for_client(handles, hid, addr, port, &h) != 0 || !h || h->fd < 0) {
+      sfs_handle *h = NULL;
+      if (sfs_handles_get_for_client(handles, hid, addr, port, &h) != 0 || !h || h->fd < 0) {
         // Broadcast any pending dead handles to all known clients
         broadcast_deadhandles(net, handles);
         send_err_pkt(net, rid, EBADF, addr, port);
@@ -1287,7 +1287,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       pr->start_pos = offset;
       pr->current_pos = offset;
       pr->end_pos = offset + rlen;
-      pr->state = RAS_READ_STATE_WAIT_DATA_ACK;
+      pr->state = SFS_READ_STATE_WAIT_DATA_ACK;
       pr->rid[0] = rid[0];
       pr->rid[1] = rid[1];
       pr->rid[2] = rid[2];
@@ -1344,11 +1344,11 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       uint32_t offset = read_u32(buf + 12);
       uint32_t amount = read_u32(buf + 16);
 
-      ras_log(RAS_LOG_DEBUG, "RWRITE: handle=%d offset=%u amount=%u", hid,
+      sfs_log(SFS_LOG_DEBUG, "RWRITE: handle=%d offset=%u amount=%u", hid,
               offset, amount);
 
-      ras_handle *h = NULL;
-      if (ras_handles_get_for_client(handles, hid, addr, port, &h) != 0 || !h) {
+      sfs_handle *h = NULL;
+      if (sfs_handles_get_for_client(handles, hid, addr, port, &h) != 0 || !h) {
         // Broadcast any pending dead handles to all known clients
         broadcast_deadhandles(net, handles);
         send_err_pkt(net, rid, EBADF, addr, port);
@@ -1401,12 +1401,12 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       int hid = (int)handle;
       uint32_t start_entry = read_u32(buf + 12);
 
-      ras_handle *h = NULL;
-      if (ras_handles_get_for_client(handles, hid, addr, port, &h) != 0 || !h) {
+      sfs_handle *h = NULL;
+      if (sfs_handles_get_for_client(handles, hid, addr, port, &h) != 0 || !h) {
         send_err_pkt(net, rid, EBADF, addr, port);
         break;
       }
-      if (h->type != RAS_HANDLE_DIR || !h->path) {
+      if (h->type != SFS_HANDLE_DIR || !h->path) {
         send_err_pkt(net, rid, ENOTDIR, addr, port);
         break;
       }
@@ -1426,8 +1426,8 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       int hid = (int)handle;
       uint32_t new_len = read_u32(buf + 12);
 
-      ras_handle *h = NULL;
-      if (ras_handles_get_for_client(handles, hid, addr, port, &h) != 0 || !h) {
+      sfs_handle *h = NULL;
+      if (sfs_handles_get_for_client(handles, hid, addr, port, &h) != 0 || !h) {
         send_err_pkt(net, rid, EBADF, addr, port);
         break;
       }
@@ -1458,8 +1458,8 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       uint32_t load_addr = read_u32(buf + 12);
       uint32_t exec_addr = read_u32(buf + 16);
 
-      ras_handle *h = NULL;
-      if (ras_handles_get_for_client(handles, hid, addr, port, &h) != 0 || !h) {
+      sfs_handle *h = NULL;
+      if (sfs_handles_get_for_client(handles, hid, addr, port, &h) != 0 || !h) {
         send_err_pkt(net, rid, EBADF, addr, port);
         break;
       }
@@ -1476,12 +1476,12 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
 
         // Only rename files, not directories (directories don't need ,xxx
         // suffix)
-        if (h->path[0] && h->type == RAS_HANDLE_FILE) {
+        if (h->path[0] && h->type == SFS_HANDLE_FILE) {
           char new_path[1024];
-          ras_append_type_suffix(h->path, new_ftype, new_path,
+          sfs_append_type_suffix(h->path, new_ftype, new_path,
                                  sizeof(new_path));
           if (strcmp(h->path, new_path) != 0) {
-            ras_log(RAS_LOG_DEBUG, "RSETINFO: attempting rename '%s' -> '%s'",
+            sfs_log(SFS_LOG_DEBUG, "RSETINFO: attempting rename '%s' -> '%s'",
                     h->path, new_path);
             int rename_err = 0;
 
@@ -1521,10 +1521,10 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
                 // Update open_flags to reflect the new state (Text/Binary)
                 h->open_flags = flags;
 
-                ras_log(RAS_LOG_DEBUG, "RSETINFO: renamed and reopened '%s'",
+                sfs_log(SFS_LOG_DEBUG, "RSETINFO: renamed and reopened '%s'",
                         new_path);
               } else {
-                ras_log(RAS_LOG_ERROR,
+                sfs_log(SFS_LOG_ERROR,
                         "RSETINFO: renamed but failed to reopen '%s': %s",
                         new_path, strerror(errno));
                 // Handle is effectively dead/closed.
@@ -1533,7 +1533,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
             } else {
               // Rename failed
               rename_err = errno;
-              ras_log(RAS_LOG_ERROR, "RSETINFO: rename failed '%s' -> '%s': %s",
+              sfs_log(SFS_LOG_ERROR, "RSETINFO: rename failed '%s' -> '%s': %s",
                       h->path, new_path, strerror(errno));
               // Try to re-open original
               int flags = h->open_flags ? h->open_flags : (O_RDWR | O_BINARY);
@@ -1550,10 +1550,10 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
               } else {
                 h->path = np; strcpy(h->path, new_path);
               }
-              ras_log(RAS_LOG_DEBUG, "RSETINFO: renamed to '%s'", new_path);
+              sfs_log(SFS_LOG_DEBUG, "RSETINFO: renamed to '%s'", new_path);
             } else {
               rename_err = errno;
-              ras_log(RAS_LOG_ERROR, "RSETINFO: rename failed '%s' -> '%s': %s",
+              sfs_log(SFS_LOG_ERROR, "RSETINFO: rename failed '%s' -> '%s': %s",
                       h->path, new_path, strerror(errno));
             }
 #endif
@@ -1612,7 +1612,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       if (pending_rename.active) {
         if (memcmp(pending_rename.rid, rid, sizeof(pending_rename.rid)) == 0) {
           // Duplicate A-pkt for same pending rename; ignore and keep waiting
-          ras_log(RAS_LOG_INFO,
+          sfs_log(SFS_LOG_INFO,
                   "RRENAME: duplicate A-pkt rid=%02x%02x%02x old='%s'", rid[0],
                   rid[1], rid[2], pending_rename.old_host_path);
           // Re-send request for the new name to prompt the client
@@ -1637,7 +1637,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         send_err_pkt(net, rid, ENOENT, addr, port);
         break;
       }
-      int old_suffix_type = ras_filetype_from_suffix(actual_old_path);
+      int old_suffix_type = sfs_filetype_from_suffix(actual_old_path);
 
       pending_rename.active = 1;
       memcpy(pending_rename.rid, rid, sizeof(pending_rename.rid));
@@ -1652,7 +1652,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       pending_rename.suffix_type = old_suffix_type;
       pending_rename.started_at = time(NULL);
 
-      ras_log(RAS_LOG_DEBUG,
+      sfs_log(SFS_LOG_DEBUG,
               "RRENAME: awaiting D-pkt rid=%02x%02x%02x old='%s' new_len=%u",
               rid[0], rid[1], rid[2], old_path_str, new_name_len);
 
@@ -1672,8 +1672,8 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       int hid = (int)handle;
       uint32_t ensure_size = read_u32(buf + 12);
 
-      ras_handle *h = NULL;
-      if (ras_handles_get_for_client(handles, hid, addr, port, &h) != 0 || !h) {
+      sfs_handle *h = NULL;
+      if (sfs_handles_get_for_client(handles, hid, addr, port, &h) != 0 || !h) {
         send_err_pkt(net, rid, EBADF, addr, port);
         break;
       }
@@ -1709,8 +1709,8 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       // Format: cmd(1) + rid(3) + code(4) + handle(4) = 12 bytes
       int hid = (int)handle;
 
-      ras_handle *h = NULL;
-      if (ras_handles_get_for_client(handles, hid, addr, port, &h) != 0 || !h) {
+      sfs_handle *h = NULL;
+      if (sfs_handles_get_for_client(handles, hid, addr, port, &h) != 0 || !h) {
         send_err_pkt(net, rid, EBADF, addr, port);
         break;
       }
@@ -1741,8 +1741,8 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       int hid = (int)handle;
       uint32_t new_pos = read_u32(buf + 12);
 
-      ras_handle *h = NULL;
-      if (ras_handles_get_for_client(handles, hid, addr, port, &h) != 0 || !h) {
+      sfs_handle *h = NULL;
+      if (sfs_handles_get_for_client(handles, hid, addr, port, &h) != 0 || !h) {
         send_err_pkt(net, rid, EBADF, addr, port);
         break;
       }
@@ -1775,8 +1775,8 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       uint32_t offset = read_u32(buf + 12);
       uint32_t zero_len = read_u32(buf + 16);
 
-      ras_handle *h = NULL;
-      if (ras_handles_get_for_client(handles, hid, addr, port, &h) != 0 || !h) {
+      sfs_handle *h = NULL;
+      if (sfs_handles_get_for_client(handles, hid, addr, port, &h) != 0 || !h) {
         send_err_pkt(net, rid, EBADF, addr, port);
         break;
       }
@@ -1807,7 +1807,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     }
 
     default:
-      ras_log(RAS_LOG_DEBUG, "Unsupported A-cmd code %u", code);
+      sfs_log(SFS_LOG_DEBUG, "Unsupported A-cmd code %u", code);
       send_err_pkt(net, rid, ENOSYS, addr, port);
       break;
     }
@@ -1826,16 +1826,16 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     uint32_t extra = read_u32(buf + 12);
     const char *path = (len > 16) ? (const char *)(buf + 16) : "";
 
-    ras_log(RAS_LOG_PROTOCOL, "B-cmd code=%u handle=%u extra=%u path='%s'",
+    sfs_log(SFS_LOG_PROTOCOL, "B-cmd code=%u handle=%u extra=%u path='%s'",
             code, handle, extra, path);
 
     switch (code) {
     case 0x03: // ROPENDIR
     {
-      ras_log(RAS_LOG_DEBUG, "ROPENDIR: attempting resolve_path for '%s'",
+      sfs_log(SFS_LOG_DEBUG, "ROPENDIR: attempting resolve_path for '%s'",
               path);
       if (resolve_path(cfg, path, host_path, sizeof(host_path)) != 0) {
-        ras_log(RAS_LOG_DEBUG,
+        sfs_log(SFS_LOG_DEBUG,
                 "ROPENDIR: resolve_path failed, trying share match");
         // Path is a share name - check if it's a valid share
         int share_idx = -1;
@@ -1848,38 +1848,38 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         if (share_idx >= 0) {
           snprintf(host_path, sizeof(host_path), "%s",
                    cfg->shares[share_idx].path);
-          ras_log(RAS_LOG_DEBUG, "ROPENDIR: share match found, path='%s'",
+          sfs_log(SFS_LOG_DEBUG, "ROPENDIR: share match found, path='%s'",
                   host_path);
         } else {
-          ras_log(RAS_LOG_DEBUG, "ROPENDIR: no share match, sending ENOENT");
+          sfs_log(SFS_LOG_DEBUG, "ROPENDIR: no share match, sending ENOENT");
           send_err_pkt(net, rid, ENOENT, addr, port);
           break;
         }
       }
-      ras_log(RAS_LOG_DEBUG, "ROPENDIR: host_path='%s'", host_path);
+      sfs_log(SFS_LOG_DEBUG, "ROPENDIR: host_path='%s'", host_path);
       struct stat st;
       if (stat(host_path, &st) != 0 || !S_ISDIR(st.st_mode)) {
-        ras_log(RAS_LOG_DEBUG, "ROPENDIR: stat failed or not a dir: errno=%d",
+        sfs_log(SFS_LOG_DEBUG, "ROPENDIR: stat failed or not a dir: errno=%d",
                 errno);
         send_err_pkt(net, rid, ENOTDIR, addr, port);
         break;
       }
-      ras_log(RAS_LOG_DEBUG, "ROPENDIR: stat OK, is directory");
+      sfs_log(SFS_LOG_DEBUG, "ROPENDIR: stat OK, is directory");
       int hid = 0, tok = 0;
-      if (ras_handles_add_ex(handles, RAS_HANDLE_DIR, -1, host_path, 0, 0, 0,
-                             ras_mode_to_attrs(st.st_mode), &hid, &tok) != 0) {
-        ras_log(RAS_LOG_DEBUG, "ROPENDIR: ras_handles_add_ex failed");
+      if (sfs_handles_add_ex(handles, SFS_HANDLE_DIR, -1, host_path, 0, 0, 0,
+                             sfs_mode_to_attrs(st.st_mode), &hid, &tok) != 0) {
+        sfs_log(SFS_LOG_DEBUG, "ROPENDIR: sfs_handles_add_ex failed");
         send_err_pkt(net, rid, EMFILE, addr, port);
         break;
       }
-      ras_handle_set_client(handles, hid, addr, port);
-      ras_log(RAS_LOG_DEBUG,
+      sfs_handle_set_client(handles, hid, addr, port);
+      sfs_log(SFS_LOG_DEBUG,
               "ROPENDIR: handle=%d, calling send_catalogue_response", hid);
       // Build sorted listing once; serve all RREADDIR pages from cache.
       populate_dir_listing(host_path, cfg, handles, hid);
       {
-        ras_handle *dh = NULL;
-        ras_handles_get(handles, hid, &dh);
+        sfs_handle *dh = NULL;
+        sfs_handles_get(handles, hid, &dh);
         send_catalogue_response(net, rid,
                                 dh ? dh->dir_entries : NULL,
                                 dh ? dh->dir_entry_count : 0,
@@ -1900,8 +1900,8 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       uint32_t pos = extra; // extra contains position
       uint32_t rlen = read_u32(buf + 16);
 
-      ras_handle *h = NULL;
-      if (ras_handles_get_for_client(handles, hid, addr, port, &h) != 0 ||
+      sfs_handle *h = NULL;
+      if (sfs_handles_get_for_client(handles, hid, addr, port, &h) != 0 ||
           !h || h->fd < 0) {
         send_err_pkt(net, rid, EBADF, addr, port);
         break;
@@ -1966,7 +1966,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       write_u32(pkt + off, new_pos);
       off += 4;
 
-      ras_net_sendto(net->rpc, pkt, off, addr, port);
+      sfs_net_sendto(net->rpc, pkt, off, addr, port);
       free(pkt);
       break;
     }
@@ -1980,14 +1980,14 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       }
       int hid = (int)handle;
 
-      ras_handle *h = NULL;
+      sfs_handle *h = NULL;
       for (size_t i = 0; i < handles->count; ++i) {
         if (handles->items[i].id == hid) {
           h = &handles->items[i];
           break;
         }
       }
-      if (!h || h->type != RAS_HANDLE_DIR || !h->path) {
+      if (!h || h->type != SFS_HANDLE_DIR || !h->path) {
         send_err_pkt(net, rid, EBADF, addr, port);
         break;
       }
@@ -1998,7 +1998,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     }
 
     default:
-      ras_log(RAS_LOG_DEBUG, "Unsupported B-cmd code %u", code);
+      sfs_log(SFS_LOG_DEBUG, "Unsupported B-cmd code %u", code);
       send_err_pkt(net, rid, ENOSYS, addr, port);
       break;
     }
@@ -2015,12 +2015,12 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     uint32_t code = read_u32(buf + 4);
     int hid = (int)read_u32(buf + 8);
 
-    ras_log(RAS_LOG_PROTOCOL, "a-cmd code=%u handle=%d", code, hid);
+    sfs_log(SFS_LOG_PROTOCOL, "a-cmd code=%u handle=%d", code, hid);
 
     switch (code) {
     case 0x0a: // RCLOSE
     {
-      ras_handle *h = NULL;
+      sfs_handle *h = NULL;
       for (size_t i = 0; i < handles->count; ++i) {
         if (handles->items[i].id == hid) {
           h = &handles->items[i];
@@ -2033,7 +2033,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       }
       if (h->fd >= 0)
         close(h->fd);
-      ras_handles_close(handles, hid, h->token);
+      sfs_handles_close(handles, hid, h->token);
       send_r_pkt(net, rid, NULL, 0, addr, port);
       break;
     }
@@ -2047,10 +2047,10 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       unsigned int off = read_u32(buf + 12);
       unsigned int rlen = read_u32(buf + 16);
 
-      ras_log(RAS_LOG_DEBUG, "A-cmd RREAD: handle=%d offset=%u len=%u", hid,
+      sfs_log(SFS_LOG_DEBUG, "A-cmd RREAD: handle=%d offset=%u len=%u", hid,
               off, rlen);
 
-      ras_handle *h = NULL;
+      sfs_handle *h = NULL;
       for (size_t i = 0; i < handles->count; ++i) {
         if (handles->items[i].id == hid) {
           h = &handles->items[i];
@@ -2073,7 +2073,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       pr->start_pos = off;
       pr->current_pos = off;
       pr->end_pos = off + rlen;
-      pr->state = RAS_READ_STATE_WAIT_DATA_ACK;
+      pr->state = SFS_READ_STATE_WAIT_DATA_ACK;
       pr->rid[0] = rid[0];
       pr->rid[1] = rid[1];
       pr->rid[2] = rid[2];
@@ -2125,10 +2125,10 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       unsigned int off = read_u32(buf + 12);
       unsigned int amount = read_u32(buf + 16);
 
-      ras_log(RAS_LOG_DEBUG, "a-cmd RWRITE: handle=%d offset=%u amount=%u", hid,
+      sfs_log(SFS_LOG_DEBUG, "a-cmd RWRITE: handle=%d offset=%u amount=%u", hid,
               off, amount);
 
-      ras_handle *h = NULL;
+      sfs_handle *h = NULL;
       for (size_t i = 0; i < handles->count; ++i) {
         if (handles->items[i].id == hid) {
           h = &handles->items[i];
@@ -2177,14 +2177,14 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         break;
       }
       unsigned int start = read_u32(buf + 12);
-      ras_handle *h = NULL;
+      sfs_handle *h = NULL;
       for (size_t i = 0; i < handles->count; ++i) {
         if (handles->items[i].id == hid) {
           h = &handles->items[i];
           break;
         }
       }
-      if (!h || h->type != RAS_HANDLE_DIR || !h->path) {
+      if (!h || h->type != SFS_HANDLE_DIR || !h->path) {
         send_err_pkt(net, rid, EBADF, addr, port);
         break;
       }
@@ -2200,7 +2200,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         break;
       }
       unsigned int ensure_size = read_u32(buf + 12);
-      ras_handle *h = NULL;
+      sfs_handle *h = NULL;
       for (size_t i = 0; i < handles->count; ++i) {
         if (handles->items[i].id == hid) {
           h = &handles->items[i];
@@ -2236,7 +2236,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         break;
       }
       unsigned int newlen = read_u32(buf + 12);
-      ras_handle *h = NULL;
+      sfs_handle *h = NULL;
       for (size_t i = 0; i < handles->count; ++i) {
         if (handles->items[i].id == hid) {
           h = &handles->items[i];
@@ -2266,7 +2266,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       }
       uint32_t load = read_u32(buf + 12);
       uint32_t exec = read_u32(buf + 16);
-      ras_handle *h = NULL;
+      sfs_handle *h = NULL;
       for (size_t i = 0; i < handles->count; ++i) {
         if (handles->items[i].id == hid) {
           h = &handles->items[i];
@@ -2282,8 +2282,8 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       // Update file mtime from exec address
       if (h->path) {
         uint64_t cs = ((uint64_t)(load & 0xFF) << 32) | exec;
-        time_t t = ras_time_from_riscos(cs);
-        ras_set_mtime(h->path, t);
+        time_t t = sfs_time_from_riscos(cs);
+        sfs_set_mtime(h->path, t);
       }
       send_r_pkt(net, rid, NULL, 0, addr, port);
       break;
@@ -2291,7 +2291,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
 
     case 0x11: // RGETSEQPTR
     {
-      ras_handle *h = NULL;
+      sfs_handle *h = NULL;
       for (size_t i = 0; i < handles->count; ++i) {
         if (handles->items[i].id == hid) {
           h = &handles->items[i];
@@ -2315,7 +2315,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         break;
       }
       uint32_t ptr = read_u32(buf + 12);
-      ras_handle *h = NULL;
+      sfs_handle *h = NULL;
       for (size_t i = 0; i < handles->count; ++i) {
         if (handles->items[i].id == hid) {
           h = &handles->items[i];
@@ -2341,7 +2341,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       }
       unsigned int offset = read_u32(buf + 12);
       unsigned int zero_len = read_u32(buf + 16);
-      ras_handle *h = NULL;
+      sfs_handle *h = NULL;
       for (size_t i = 0; i < handles->count; ++i) {
         if (handles->items[i].id == hid) {
           h = &handles->items[i];
@@ -2381,7 +2381,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     }
 
     default:
-      ras_log(RAS_LOG_DEBUG, "Unsupported a-cmd code %u", code);
+      sfs_log(SFS_LOG_DEBUG, "Unsupported a-cmd code %u", code);
       send_err_pkt(net, rid, ENOSYS, addr, port);
       break;
     }
@@ -2399,13 +2399,13 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     uint32_t handle = read_u32(buf + 8);
     (void)handle;
 
-    ras_log(RAS_LOG_PROTOCOL, "F-cmd code=%u handle=%u", code, handle);
+    sfs_log(SFS_LOG_PROTOCOL, "F-cmd code=%u handle=%u", code, handle);
 
     switch (code) {
     case 0x13: // RDEADHANDLES - client asking about dead handles
     {
       size_t dead_count = 0;
-      const int *dead = ras_handles_get_dead(handles, &dead_count);
+      const int *dead = sfs_handles_get_dead(handles, &dead_count);
 
       // Cap to a reasonable maximum (protocol handletable is 240/4 entries)
       const size_t max_dead = 60; // 60 * 4 bytes = 240 bytes like original
@@ -2428,7 +2428,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       free(reply);
 
       // Clear after reporting so the list doesn't grow without bound
-      ras_handles_clear_dead(handles);
+      sfs_handles_clear_dead(handles);
       break;
     }
 
@@ -2441,7 +2441,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     }
 
     default:
-      ras_log(RAS_LOG_DEBUG, "Unsupported F-cmd code %u", code);
+      sfs_log(SFS_LOG_DEBUG, "Unsupported F-cmd code %u", code);
       send_err_pkt(net, rid, ENOSYS, addr, port);
       break;
     }
@@ -2459,7 +2459,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     const unsigned char *data = buf + 8;
     size_t data_len = len - 8;
 
-    ras_log(RAS_LOG_DEBUG, "d-pkt: rel_pos=%u data_len=%zu", rel_pos, data_len);
+    sfs_log(SFS_LOG_DEBUG, "d-pkt: rel_pos=%u data_len=%zu", rel_pos, data_len);
 
     // Handle pending RRENAME first (client uses the lowercase 'd' channel
     // for the new name payload). This avoids misclassifying it as a write.
@@ -2515,9 +2515,9 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       // Preserve existing ,xxx suffix when renaming files stored with
       // RISC OS filetype suffixes on disk.
       if (pending_rename.suffix_type >= 0 &&
-          ras_filetype_from_suffix(new_host_path) < 0) {
+          sfs_filetype_from_suffix(new_host_path) < 0) {
         char suffixed[1024];
-        ras_append_type_suffix(new_host_path,
+        sfs_append_type_suffix(new_host_path,
                                (uint32_t)pending_rename.suffix_type,
                                suffixed, sizeof(suffixed));
         strncpy(new_host_path, suffixed, sizeof(new_host_path) - 1);
@@ -2530,7 +2530,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         return 0;
       }
 
-      ras_log(RAS_LOG_DEBUG, "RRENAME: '%s' -> '%s'",
+      sfs_log(SFS_LOG_DEBUG, "RRENAME: '%s' -> '%s'",
               pending_rename.old_host_path, new_host_path);
       send_r_pkt(net, rid, NULL, 0, pending_rename.addr, pending_rename.port);
       clear_pending_rename();
@@ -2540,7 +2540,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     // Find pending write for this reply ID
     pending_write_t *pw = find_pending_write(rid);
     if (!pw) {
-      ras_log(RAS_LOG_DEBUG, "d-pkt: no pending write found for rid");
+      sfs_log(SFS_LOG_DEBUG, "d-pkt: no pending write found for rid");
       return 0;
     }
 
@@ -2548,7 +2548,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     // Instead of aborting immediately, we retry with a backoff.
     if (data_len == 0) {
       if (pw->retries >= 1000) {
-        ras_log(RAS_LOG_ERROR, "d-pkt: timeout waiting for data (received 0 "
+        sfs_log(SFS_LOG_ERROR, "d-pkt: timeout waiting for data (received 0 "
                                "bytes 1000 times), aborting write");
         send_err_pkt(net, pw->rid, EIO, pw->addr, pw->port);
         free_pending_write(pw);
@@ -2556,7 +2556,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       }
       pw->retries++;
       // Wait a bit to avoid flooding and give client time
-      ras_sleep_ms(10);
+      sfs_sleep_ms(10);
 
       // Resend 'w' packet to request the expected chunk
       uint32_t expected_rel = pw->current_pos - pw->start_pos;
@@ -2566,7 +2566,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
 
       // Log occasionally to avoid spam
       if (pw->retries % 100 == 0) {
-        ras_log(RAS_LOG_DEBUG, "d-pkt: received 0 bytes, retrying (%d/1000)",
+        sfs_log(SFS_LOG_DEBUG, "d-pkt: received 0 bytes, retrying (%d/1000)",
                 pw->retries);
       }
 
@@ -2578,9 +2578,9 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     pw->retries = 0;
 
     // Get the handle
-    ras_handle *h = NULL;
-    if (ras_handles_get(handles, pw->handle_id, &h) != 0 || !h || h->fd < 0) {
-      ras_log(RAS_LOG_DEBUG, "d-pkt: handle %d invalid", pw->handle_id);
+    sfs_handle *h = NULL;
+    if (sfs_handles_get(handles, pw->handle_id, &h) != 0 || !h || h->fd < 0) {
+      sfs_log(SFS_LOG_DEBUG, "d-pkt: handle %d invalid", pw->handle_id);
       free_pending_write(pw);
       return 0;
     }
@@ -2588,7 +2588,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     // Check for sequential write
     uint32_t expected_rel = pw->current_pos - pw->start_pos;
     if (rel_pos != expected_rel) {
-      ras_log(RAS_LOG_ERROR,
+      sfs_log(SFS_LOG_ERROR,
               "d-pkt: Non-sequential write. rel_pos=%u expected=%u", rel_pos,
               expected_rel);
 
@@ -2606,7 +2606,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     // Calculate absolute position and write data
     uint32_t abs_pos = pw->start_pos + rel_pos;
     if (lseek(h->fd, (off_t)abs_pos, SEEK_SET) < 0) {
-      ras_log(RAS_LOG_DEBUG, "d-pkt: lseek failed");
+      sfs_log(SFS_LOG_DEBUG, "d-pkt: lseek failed");
       send_err_pkt(net, pw->rid, errno, pw->addr, pw->port);
       free_pending_write(pw);
       return 0;
@@ -2614,7 +2614,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
 
     ssize_t n = write(h->fd, data, data_len);
     if (n < 0) {
-      ras_log(RAS_LOG_DEBUG, "d-pkt: write failed");
+      sfs_log(SFS_LOG_DEBUG, "d-pkt: write failed");
       send_err_pkt(net, pw->rid, errno, pw->addr, pw->port);
       free_pending_write(pw);
       return 0;
@@ -2625,7 +2625,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     if (h->seq_ptr > h->length)
       h->length = h->seq_ptr;
 
-    ras_log(RAS_LOG_DEBUG,
+    sfs_log(SFS_LOG_DEBUG,
             "d-pkt: wrote %zd bytes at %u, current_pos=%u end_pos=%u", n,
             abs_pos, pw->current_pos, pw->end_pos);
 
@@ -2640,7 +2640,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
                  pw->port);
     } else {
       // Transfer complete
-      ras_log(RAS_LOG_DEBUG, "d-pkt: transfer complete, sending R-pkt");
+      sfs_log(SFS_LOG_DEBUG, "d-pkt: transfer complete, sending R-pkt");
       send_r_pkt(net, pw->rid, NULL, 0, pw->addr, pw->port);
       free_pending_write(pw);
     }
@@ -2650,13 +2650,13 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
   // 'D' command - payload carrying new name for a pending RRENAME
   // Format: D + rid(3) + new_name bytes (length announced in prior A-packet)
   if (cmd == 'D') {
-    ras_log(RAS_LOG_INFO, "D-pkt: len=%zu rid=%02x%02x%02x", len,
+    sfs_log(SFS_LOG_INFO, "D-pkt: len=%zu rid=%02x%02x%02x", len,
             rid[0], rid[1], rid[2]);
     size_t payload_len = (len > 4) ? (len - 4) : 0;
 
     if (!pending_rename.active ||
         memcmp(pending_rename.rid, rid, sizeof(pending_rename.rid)) != 0) {
-      ras_log(RAS_LOG_INFO, "D-pkt: no pending rename for rid=%02x%02x%02x",
+      sfs_log(SFS_LOG_INFO, "D-pkt: no pending rename for rid=%02x%02x%02x",
               rid[0], rid[1], rid[2]);
       return 0;
     }
@@ -2684,9 +2684,9 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     }
 
     if (pending_rename.suffix_type >= 0 &&
-        ras_filetype_from_suffix(new_host_path) < 0) {
+        sfs_filetype_from_suffix(new_host_path) < 0) {
       char suffixed[1024];
-      ras_append_type_suffix(new_host_path,
+      sfs_append_type_suffix(new_host_path,
                              (uint32_t)pending_rename.suffix_type, suffixed,
                              sizeof(suffixed));
       strncpy(new_host_path, suffixed, sizeof(new_host_path) - 1);
@@ -2699,7 +2699,7 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       return 0;
     }
 
-    ras_log(RAS_LOG_DEBUG, "RRENAME: '%s' -> '%s'", pending_rename.old_host_path,
+    sfs_log(SFS_LOG_DEBUG, "RRENAME: '%s' -> '%s'", pending_rename.old_host_path,
             new_host_path);
     send_r_pkt(net, rid, NULL, 0, pending_rename.addr, pending_rename.port);
     clear_pending_rename();
@@ -2708,26 +2708,26 @@ int ras_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
 
   // 'r' command - acknowledgement packet from client for RREAD
   if (cmd == 'r') {
-    return ras_rpc_handle_r(buf, len, addr, port, net, handles);
+    return sfs_rpc_handle_r(buf, len, addr, port, net, handles);
   }
 
   // Unknown command
-  ras_log(RAS_LOG_DEBUG, "Unsupported cmd '%c' (%u)", cmd, cmd);
+  sfs_log(SFS_LOG_DEBUG, "Unsupported cmd '%c' (%u)", cmd, cmd);
   send_err_pkt(net, rid, ENOSYS, addr, port);
   return 0;
 }
 
 // Handle 'r' packet (acknowledgement from client for RREAD data)
-int ras_rpc_handle_r(const unsigned char *buf, size_t len, const char *addr,
-                     unsigned short port, ras_net *net,
-                     ras_handle_table *handles) {
+int sfs_rpc_handle_r(const unsigned char *buf, size_t len, const char *addr,
+                     unsigned short port, sfs_net *net,
+                     sfs_handle_table *handles) {
   // Format: r + rid(3) + ...
   if (len < 4)
     return 0;
 
   unsigned char rid[3] = {buf[1], buf[2], buf[3]};
   // Low level protocol logging only
-  // ras_log(RAS_LOG_DEBUG, "r-pkt from %s:%u", addr, port);
+  // sfs_log(SFS_LOG_DEBUG, "r-pkt from %s:%u", addr, port);
 
   pending_read_t *pr = find_pending_read(rid);
   if (!pr) {
@@ -2735,16 +2735,16 @@ int ras_rpc_handle_r(const unsigned char *buf, size_t len, const char *addr,
     return 0;
   }
 
-  ras_handle *h = NULL;
-  if (ras_handles_get(handles, pr->handle_id, &h) != 0 || !h || h->fd < 0) {
-    ras_log(RAS_LOG_DEBUG, "r-pkt: handle %d invalid", pr->handle_id);
+  sfs_handle *h = NULL;
+  if (sfs_handles_get(handles, pr->handle_id, &h) != 0 || !h || h->fd < 0) {
+    sfs_log(SFS_LOG_DEBUG, "r-pkt: handle %d invalid", pr->handle_id);
     free_pending_read(pr);
     return 0;
   }
 
-  if (pr->state == RAS_READ_STATE_WAIT_DATA_ACK) {
+  if (pr->state == SFS_READ_STATE_WAIT_DATA_ACK) {
     // We received ACK for the data packet.
-    ras_log(RAS_LOG_DEBUG, "RREAD: Done Data %u/%u. Sending Status.",
+    sfs_log(SFS_LOG_DEBUG, "RREAD: Done Data %u/%u. Sending Status.",
             pr->current_pos - pr->start_pos, pr->end_pos - pr->start_pos);
 
     // Send Status Packet (D header with current offset, no data)
@@ -2752,7 +2752,7 @@ int ras_rpc_handle_r(const unsigned char *buf, size_t len, const char *addr,
                            addr, port);
 
     if (pr->current_pos >= pr->end_pos) {
-      ras_log(RAS_LOG_DEBUG, "RREAD: Transfer Complete. Sending R.");
+      sfs_log(SFS_LOG_DEBUG, "RREAD: Transfer Complete. Sending R.");
       // Transfer complete
       unsigned char reply[8];
       write_u32(reply, pr->end_pos - pr->start_pos);
@@ -2761,14 +2761,14 @@ int ras_rpc_handle_r(const unsigned char *buf, size_t len, const char *addr,
       free_pending_read(pr);
     } else {
       // Wait for client to request next chunk
-      pr->state = RAS_READ_STATE_WAIT_STATUS_ACK;
+      pr->state = SFS_READ_STATE_WAIT_STATUS_ACK;
     }
-  } else if (pr->state == RAS_READ_STATE_WAIT_STATUS_ACK) {
+  } else if (pr->state == SFS_READ_STATE_WAIT_STATUS_ACK) {
     // We received ACK for status packet.
     // Client sends next requested range in this packet.
     // Format: r + rid + pos(4) + end(4) (relative to start)
     if (len < 12) {
-      ras_log(RAS_LOG_DEBUG, "r-pkt: short status ack");
+      sfs_log(SFS_LOG_DEBUG, "r-pkt: short status ack");
       free_pending_read(pr);
       return 0;
     }
@@ -2776,7 +2776,7 @@ int ras_rpc_handle_r(const unsigned char *buf, size_t len, const char *addr,
     uint32_t rel_pos = read_u32(buf + 4);
     uint32_t rel_end = read_u32(buf + 8);
 
-    ras_log(RAS_LOG_DEBUG, "RREAD: Client Request: RelPos=%u RelEnd=%u",
+    sfs_log(SFS_LOG_DEBUG, "RREAD: Client Request: RelPos=%u RelEnd=%u",
             rel_pos, rel_end);
 
     uint32_t next_pos = pr->start_pos + rel_pos;
@@ -2784,7 +2784,7 @@ int ras_rpc_handle_r(const unsigned char *buf, size_t len, const char *addr,
 
     // Sanity check
     if (next_pos >= pr->end_pos) {
-      ras_log(RAS_LOG_DEBUG, "RREAD: Client requested beyond end.");
+      sfs_log(SFS_LOG_DEBUG, "RREAD: Client requested beyond end.");
       free_pending_read(pr);
       return 0;
     }
@@ -2800,7 +2800,7 @@ int ras_rpc_handle_r(const unsigned char *buf, size_t len, const char *addr,
     if (pr->current_pos + amount > pr->end_pos)
       amount = pr->end_pos - pr->current_pos;
 
-    ras_log(RAS_LOG_DEBUG, "RREAD: Sending Data: Offset=%u Len=%u",
+    sfs_log(SFS_LOG_DEBUG, "RREAD: Sending Data: Offset=%u Len=%u",
             pr->current_pos - pr->start_pos, amount);
 
     // Read next chunk
@@ -2821,7 +2821,7 @@ int ras_rpc_handle_r(const unsigned char *buf, size_t len, const char *addr,
                            (size_t)n, addr, port);
 
     pr->current_pos += (uint32_t)n;
-    pr->state = RAS_READ_STATE_WAIT_DATA_ACK;
+    pr->state = SFS_READ_STATE_WAIT_DATA_ACK;
   }
 
   return 0;

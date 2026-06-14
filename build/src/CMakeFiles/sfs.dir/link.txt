@@ -1,0 +1,2 @@
+/usr/bin/ar qc libsfs.a CMakeFiles/sfs.dir/log.c.o CMakeFiles/sfs.dir/config.c.o CMakeFiles/sfs.dir/names.c.o CMakeFiles/sfs.dir/platform.c.o CMakeFiles/sfs.dir/net.c.o CMakeFiles/sfs.dir/handle.c.o CMakeFiles/sfs.dir/broadcast.c.o CMakeFiles/sfs.dir/server.c.o CMakeFiles/sfs.dir/printer.c.o CMakeFiles/sfs.dir/riscos.c.o CMakeFiles/sfs.dir/accessplus.c.o CMakeFiles/sfs.dir/ops.c.o
+/usr/bin/ranlib libsfs.a

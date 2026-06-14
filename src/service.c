@@ -1,4 +1,4 @@
-// RISC OS Access/ShareFS Server - Windows Service Wrapper
+// ShareFS Server - Windows Service Wrapper
 // Author: Andrew Timmins
 // License: GPL-3.0-only
 
@@ -17,8 +17,8 @@
 #include <string.h>
 #include <windows.h>
 
-#define SERVICE_NAME "AccessServer"
-#define SERVICE_DISPLAY_NAME "RISC OS Access/ShareFS Server"
+#define SERVICE_NAME "ShareFSServer"
+#define SERVICE_DISPLAY_NAME "ShareFS Server"
 
 // Global service state
 static SERVICE_STATUS g_service_status = {0};
@@ -27,18 +27,18 @@ static HANDLE g_stop_event = NULL;
 static HANDLE g_server_thread = NULL;
 
 // Server state
-static ras_config g_config;
-static ras_net g_net;
-static ras_handle_table g_handles;
+static sfs_config g_config;
+static sfs_net g_net;
+static sfs_handle_table g_handles;
 static volatile int g_running = 0;
 
 // Find configuration file
 static const char *find_config_file(void) {
   // Windows service config search paths
     static const char *search_paths[] = {
-      "C:\\AccessServer\\access.conf",
-      "C:\\ProgramData\\AccessServer\\access.conf",
-      "access.conf", // Fallback: current/executable directory
+      "C:\\ShareFS\\sharefs.conf",
+      "C:\\ProgramData\\ShareFS\\sharefs.conf",
+      "sharefs.conf",
       NULL};
 
   for (const char **p = search_paths; *p != NULL; ++p) {
@@ -56,7 +56,7 @@ static DWORD WINAPI server_thread_func(LPVOID param) {
   (void)param;
 
   // Run the server
-  ras_server_run(&g_config, &g_net, &g_handles);
+  sfs_server_run(&g_config, &g_net, &g_handles);
 
   return 0;
 }
@@ -139,69 +139,69 @@ static VOID WINAPI service_main(DWORD argc, LPTSTR *argv) {
   }
 
   // Initialize platform
-  if (ras_platform_init() != 0) {
+  if (sfs_platform_init() != 0) {
     report_service_status(SERVICE_STOPPED, ERROR_SERVICE_SPECIFIC_ERROR, 0);
     CloseHandle(g_stop_event);
     return;
   }
 
   // Initialize logging
-  ras_log_init();
+  sfs_log_init();
 
   // Load and validate config
-  if (ras_config_load(config_path, &g_config) != 0) {
-    ras_log(RAS_LOG_ERROR, "Failed to load config: %s", config_path);
-    ras_platform_shutdown();
+  if (sfs_config_load(config_path, &g_config) != 0) {
+    sfs_log(SFS_LOG_ERROR, "Failed to load config: %s", config_path);
+    sfs_platform_shutdown();
     report_service_status(SERVICE_STOPPED, ERROR_SERVICE_SPECIFIC_ERROR, 0);
     CloseHandle(g_stop_event);
     return;
   }
 
-  if (ras_config_validate(&g_config) != 0) {
-    ras_log(RAS_LOG_ERROR, "Invalid configuration");
-    ras_config_unload(&g_config);
-    ras_platform_shutdown();
+  if (sfs_config_validate(&g_config) != 0) {
+    sfs_log(SFS_LOG_ERROR, "Invalid configuration");
+    sfs_config_unload(&g_config);
+    sfs_platform_shutdown();
     report_service_status(SERVICE_STOPPED, ERROR_SERVICE_SPECIFIC_ERROR, 0);
     CloseHandle(g_stop_event);
     return;
   }
 
-  ras_log_set_level(ras_log_level_from_string(g_config.server.log_level));
-  ras_log(RAS_LOG_INFO, "Service starting with config %s", config_path);
+  sfs_log_set_level(sfs_log_level_from_string(g_config.server.log_level));
+  sfs_log(SFS_LOG_INFO, "Service starting with config %s", config_path);
 
   // Open network
   if (g_config.server.bind_ip) {
-    ras_log(RAS_LOG_INFO, "Binding to specific address: %s",
+    sfs_log(SFS_LOG_INFO, "Binding to specific address: %s",
             g_config.server.bind_ip);
   }
-  if (ras_net_open(&g_net, g_config.server.bind_ip) != 0) {
-    ras_log(RAS_LOG_ERROR, "Failed to open network sockets");
-    ras_config_unload(&g_config);
-    ras_platform_shutdown();
+  if (sfs_net_open(&g_net, g_config.server.bind_ip) != 0) {
+    sfs_log(SFS_LOG_ERROR, "Failed to open network sockets");
+    sfs_config_unload(&g_config);
+    sfs_platform_shutdown();
     report_service_status(SERVICE_STOPPED, ERROR_SERVICE_SPECIFIC_ERROR, 0);
     CloseHandle(g_stop_event);
     return;
   }
 
   // Initialize handle table
-  ras_handles_init(&g_handles);
+  sfs_handles_init(&g_handles);
 
   // Report running status
   report_service_status(SERVICE_RUNNING, NO_ERROR, 0);
-  ras_log(RAS_LOG_INFO, "Service running");
+  sfs_log(SFS_LOG_INFO, "Service running");
 
   // Create server thread
   g_running = 1;
   g_server_thread = CreateThread(NULL, 0, server_thread_func, NULL, 0, NULL);
 
   if (!g_server_thread) {
-    ras_log(RAS_LOG_ERROR, "Failed to create server thread");
-    ras_handles_free(&g_handles);
-    ras_net_close(&g_net);
-    ras_printers_shutdown();
-    ras_config_unload(&g_config);
-    ras_log_shutdown();
-    ras_platform_shutdown();
+    sfs_log(SFS_LOG_ERROR, "Failed to create server thread");
+    sfs_handles_free(&g_handles);
+    sfs_net_close(&g_net);
+    sfs_printers_shutdown();
+    sfs_config_unload(&g_config);
+    sfs_log_shutdown();
+    sfs_platform_shutdown();
     report_service_status(SERVICE_STOPPED, ERROR_SERVICE_SPECIFIC_ERROR, 0);
     CloseHandle(g_stop_event);
     return;
@@ -211,20 +211,20 @@ static VOID WINAPI service_main(DWORD argc, LPTSTR *argv) {
   WaitForSingleObject(g_stop_event, INFINITE);
 
   // Cleanup
-  ras_log(RAS_LOG_INFO, "Service stopping");
+  sfs_log(SFS_LOG_INFO, "Service stopping");
   g_running = 0;
 
   // Allow server thread some time to finish
   WaitForSingleObject(g_server_thread, 5000);
   CloseHandle(g_server_thread);
 
-  ras_handles_free(&g_handles);
-  ras_net_close(&g_net);
-  ras_printers_shutdown();
-  ras_config_unload(&g_config);
-  ras_log(RAS_LOG_INFO, "Service stopped");
-  ras_log_shutdown();
-  ras_platform_shutdown();
+  sfs_handles_free(&g_handles);
+  sfs_net_close(&g_net);
+  sfs_printers_shutdown();
+  sfs_config_unload(&g_config);
+  sfs_log(SFS_LOG_INFO, "Service stopped");
+  sfs_log_shutdown();
+  sfs_platform_shutdown();
 
   CloseHandle(g_stop_event);
   report_service_status(SERVICE_STOPPED, NO_ERROR, 0);
@@ -262,7 +262,7 @@ static int install_service(void) {
     CloseServiceHandle(scm);
     if (err == ERROR_SERVICE_EXISTS) {
       fprintf(stderr, "Error: Service already exists\n");
-      fprintf(stderr, "Use 'access-service.exe uninstall' first\n");
+      fprintf(stderr, "Use 'sharefs-service.exe uninstall' first\n");
     } else {
       fprintf(stderr, "Error: Cannot create service (%lu)\n", err);
     }
@@ -272,18 +272,18 @@ static int install_service(void) {
   // Set description
   SERVICE_DESCRIPTION desc;
   desc.lpDescription =
-      "Provides Access/ShareFS file sharing for RISC OS clients";
+      "Provides ShareFS file sharing for RISC OS clients";
   ChangeServiceConfig2(service, SERVICE_CONFIG_DESCRIPTION, &desc);
 
   CloseServiceHandle(service);
   CloseServiceHandle(scm);
 
   // Create config directory if needed
-  CreateDirectory("C:\\ProgramData\\AccessServer", NULL);
+  CreateDirectory("C:\\ProgramData\\ShareFS", NULL);
 
   printf("Service installed successfully.\n");
-  printf("Configuration file: C:\\ProgramData\\AccessServer\\access.conf\n");
-  printf("To start: access-service.exe start\n");
+  printf("Configuration file: C:\\ProgramData\\ShareFS\\sharefs.conf\n");
+  printf("To start: sharefs-service.exe start\n");
   printf("The service is configured to start automatically on boot.\n");
   return 0;
 }
@@ -317,7 +317,7 @@ static int uninstall_service(void) {
   if (QueryServiceStatus(service, &status)) {
     if (status.dwCurrentState != SERVICE_STOPPED) {
       fprintf(stderr, "Error: Service is running\n");
-      fprintf(stderr, "Use 'access-service.exe stop' first\n");
+      fprintf(stderr, "Use 'sharefs-service.exe stop' first\n");
       CloseServiceHandle(service);
       CloseServiceHandle(scm);
       return 1;
@@ -357,7 +357,7 @@ static int start_service_cmd(void) {
     CloseServiceHandle(scm);
     if (err == ERROR_SERVICE_DOES_NOT_EXIST) {
       fprintf(stderr, "Error: Service is not installed\n");
-      fprintf(stderr, "Use 'access-service.exe install' first\n");
+      fprintf(stderr, "Use 'sharefs-service.exe install' first\n");
     } else {
       fprintf(stderr, "Error: Cannot open service (%lu)\n", err);
     }
@@ -441,15 +441,15 @@ static int stop_service_cmd(void) {
 
 // Print usage
 static void print_usage(void) {
-  printf("RISC OS Access/ShareFS Server - Windows Service Manager\n\n");
+  printf("ShareFS Server - Windows Service Manager\n\n");
   printf("Usage:\n");
-  printf("  access-service.exe install    Install the service\n");
-  printf("  access-service.exe uninstall  Uninstall the service\n");
-  printf("  access-service.exe start      Start the service\n");
-  printf("  access-service.exe stop       Stop the service\n");
+  printf("  sharefs-service.exe install    Install the service\n");
+  printf("  sharefs-service.exe uninstall  Uninstall the service\n");
+  printf("  sharefs-service.exe start      Start the service\n");
+  printf("  sharefs-service.exe stop       Stop the service\n");
   printf("\n");
-  printf("Configuration file: C:\\ProgramData\\AccessServer\\access.conf\n");
-  printf("(Falls back to access.conf in executable directory)\n");
+  printf("Configuration file: C:\\ProgramData\\ShareFS\\sharefs.conf\n");
+  printf("(Falls back to ./sharefs.conf in the executable directory)\n");
 }
 
 // Main entry point

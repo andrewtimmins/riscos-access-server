@@ -3,9 +3,8 @@ set -e
 
 case "$1" in
     remove|purge)
-        # Stop and disable service
-        systemctl stop access.service || true
-        systemctl disable access.service || true
+        systemctl stop sharefs.service || true
+        systemctl disable sharefs.service || true
         ;;
 esac
 

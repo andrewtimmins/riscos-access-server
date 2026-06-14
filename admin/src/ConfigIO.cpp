@@ -1,4 +1,4 @@
-// RISC OS Access Server - Admin GUI Config I/O Implementation
+// ShareFS Server - Admin GUI Config I/O Implementation
 
 #include "ConfigIO.h"
 #include <fstream>
@@ -22,7 +22,7 @@ static std::string ToLower(const std::string& str) {
     return result;
 }
 
-bool RasConfig::Load(const std::string& path, std::string& error) {
+bool SfsConfig::Load(const std::string& path, std::string& error) {
     std::ifstream file(path);
     if (!file.is_open()) {
         error = "Cannot open file: " + path;
@@ -140,7 +140,7 @@ bool RasConfig::Load(const std::string& path, std::string& error) {
     return true;
 }
 
-bool RasConfig::Save(const std::string& path, std::string& error) {
+bool SfsConfig::Save(const std::string& path, std::string& error) {
     std::string tmpPath = path + ".tmp";
     {
         std::ofstream file(tmpPath);
@@ -149,7 +149,7 @@ bool RasConfig::Save(const std::string& path, std::string& error) {
             return false;
         }
 
-        file << "# Access/ShareFS Server Configuration\n\n";
+        file << "# ShareFS Server Configuration\n\n";
 
         // Server section
         file << "[server]\n";
@@ -221,13 +221,13 @@ bool RasConfig::Save(const std::string& path, std::string& error) {
     return true;
 }
 
-std::string RasConfig::AttrsToString(uint32_t attrs) {
+std::string SfsConfig::AttrsToString(uint32_t attrs) {
     std::vector<std::string> parts;
-    if (attrs & RAS_ATTR_PROTECTED) parts.push_back("protected");
-    if (attrs & RAS_ATTR_READONLY) parts.push_back("readonly");
-    if (attrs & RAS_ATTR_HIDDEN) parts.push_back("hidden");
-    if (attrs & RAS_ATTR_SUBDIR) parts.push_back("subdir");
-    if (attrs & RAS_ATTR_CDROM) parts.push_back("cdrom");
+    if (attrs & SFS_ATTR_PROTECTED) parts.push_back("protected");
+    if (attrs & SFS_ATTR_READONLY) parts.push_back("readonly");
+    if (attrs & SFS_ATTR_HIDDEN) parts.push_back("hidden");
+    if (attrs & SFS_ATTR_SUBDIR) parts.push_back("subdir");
+    if (attrs & SFS_ATTR_CDROM) parts.push_back("cdrom");
     
     std::string result;
     for (size_t i = 0; i < parts.size(); ++i) {
@@ -237,20 +237,20 @@ std::string RasConfig::AttrsToString(uint32_t attrs) {
     return result;
 }
 
-uint32_t RasConfig::StringToAttrs(const std::string& str) {
+uint32_t SfsConfig::StringToAttrs(const std::string& str) {
     uint32_t attrs = 0;
     std::string lower = ToLower(str);
     
-    if (lower.find("protected") != std::string::npos) attrs |= RAS_ATTR_PROTECTED;
-    if (lower.find("readonly") != std::string::npos) attrs |= RAS_ATTR_READONLY;
-    if (lower.find("hidden") != std::string::npos) attrs |= RAS_ATTR_HIDDEN;
-    if (lower.find("subdir") != std::string::npos) attrs |= RAS_ATTR_SUBDIR;
-    if (lower.find("cdrom") != std::string::npos) attrs |= RAS_ATTR_CDROM;
+    if (lower.find("protected") != std::string::npos) attrs |= SFS_ATTR_PROTECTED;
+    if (lower.find("readonly") != std::string::npos) attrs |= SFS_ATTR_READONLY;
+    if (lower.find("hidden") != std::string::npos) attrs |= SFS_ATTR_HIDDEN;
+    if (lower.find("subdir") != std::string::npos) attrs |= SFS_ATTR_SUBDIR;
+    if (lower.find("cdrom") != std::string::npos) attrs |= SFS_ATTR_CDROM;
     
     return attrs;
 }
 
-void RasConfig::AddDefaultMimeMap() {
+void SfsConfig::AddDefaultMimeMap() {
     // Common file extensions to RISC OS filetypes
     m_mimemap.push_back({"txt", "FFF"});   // Text
     m_mimemap.push_back({"text", "FFF"});  // Text

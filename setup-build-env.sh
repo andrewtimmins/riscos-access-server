@@ -1,5 +1,5 @@
 #!/bin/bash
-# RISC OS Access/ShareFS Server - Build Environment Setup
+# ShareFS Server - Build Environment Setup
 # This script installs all dependencies needed to build for Linux and Windows
 #
 # Usage:
@@ -28,7 +28,7 @@ for arg in "$@"; do
 done
 
 echo "=================================================="
-echo "RISC OS Access/ShareFS Server - Build Environment"
+echo "ShareFS Server - Build Environment"
 echo "=================================================="
 echo ""
 

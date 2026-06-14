@@ -1,5 +1,5 @@
 #!/bin/bash
-# RISC OS Access/ShareFS Server - Build Script
+# ShareFS Server - Build Script
 # Builds for Linux and optionally Windows, creates deb packages
 #
 # Usage:
@@ -92,7 +92,7 @@ mkdir -p releases/linux releases/windows
 NPROC=$(nproc 2>/dev/null || echo 4)
 
 echo "=================================================="
-echo "RISC OS Access/ShareFS Server- Build"
+echo "ShareFS Server - Build"
 echo "=================================================="
 echo ""
 
@@ -162,15 +162,15 @@ cmake -S . -B build > /dev/null
 cmake --build build -j$NPROC
 
 # Copy Linux binaries to releases
-cp build/src/access releases/linux/
-if [ -f "build/admin/access-admin" ]; then
-    cp build/admin/access-admin releases/linux/
+cp build/src/sharefs-server releases/linux/
+if [ -f "build/admin/sharefs-admin" ]; then
+    cp build/admin/sharefs-admin releases/linux/
 fi
 
 echo "✓ Linux build complete"
-echo "  Server: releases/linux/access"
-if [ -f "releases/linux/access-admin" ]; then
-    echo "  Admin:  releases/linux/access-admin"
+echo "  Server: releases/linux/sharefs-server"
+if [ -f "releases/linux/sharefs-admin" ]; then
+    echo "  Admin:  releases/linux/sharefs-admin"
 fi
 
 # Build deb package
@@ -204,7 +204,7 @@ if [ "$BUILD_WINDOWS" = true ]; then
             echo "Building server only (no admin GUI)..."
             cmake -S . -B build-win \
                 -DCMAKE_TOOLCHAIN_FILE=mingw-w64-x86_64.cmake \
-                -DRAS_BUILD_ADMIN=OFF > /dev/null
+                -DSFS_BUILD_ADMIN=OFF > /dev/null
         else
             cmake -S . -B build-win \
                 -DCMAKE_TOOLCHAIN_FILE=mingw-w64-x86_64.cmake \
@@ -214,31 +214,31 @@ if [ "$BUILD_WINDOWS" = true ]; then
         # Server only
         cmake -S . -B build-win \
             -DCMAKE_TOOLCHAIN_FILE=mingw-w64-x86_64.cmake \
-            -DRAS_BUILD_ADMIN=OFF > /dev/null
+            -DSFS_BUILD_ADMIN=OFF > /dev/null
     fi
     
     cmake --build build-win -j$NPROC
     
     # Copy Windows binaries to releases
-    cp build-win/src/access.exe releases/windows/
-    cp build-win/src/access-service.exe releases/windows/
-    if [ -f "build-win/admin/access-admin.exe" ]; then
-        cp build-win/admin/access-admin.exe releases/windows/
+    cp build-win/src/sharefs-server.exe releases/windows/
+    cp build-win/src/sharefs-service.exe releases/windows/
+    if [ -f "build-win/admin/sharefs-admin.exe" ]; then
+        cp build-win/admin/sharefs-admin.exe releases/windows/
     fi
     
     echo "✓ Windows build complete"
-    echo "  Server: releases/windows/access.exe"
-    echo "  Service: releases/windows/access-service.exe"
-    if [ -f "releases/windows/access-admin.exe" ]; then
-        echo "  Admin:  releases/windows/access-admin.exe"
+    echo "  Server: releases/windows/sharefs-server.exe"
+    echo "  Service: releases/windows/sharefs-service.exe"
+    if [ -f "releases/windows/sharefs-admin.exe" ]; then
+        echo "  Admin:  releases/windows/sharefs-admin.exe"
     fi
 fi
 
 
 
 # Copy config to releases
-cp access.conf.sample releases/linux/access.conf
-cp access.conf.sample-windows releases/windows/access.conf
+cp sharefs.conf.sample releases/linux/sharefs.conf
+cp sharefs.conf.sample-windows releases/windows/sharefs.conf
 
 # Copy firewall scripts
 if [ -f "scripts/configure-firewall-linux.sh" ]; then
@@ -263,7 +263,7 @@ if [ "$BUILD_ZIP" = true ]; then
             VERSION=$(grep "project(" CMakeLists.txt | awk '{for(i=1;i<=NF;i++) if($i=="VERSION") print $(i+1)}')
             if [ -z "$VERSION" ]; then VERSION="0.0.0"; fi
             
-            ZIP_NAME="riscos-access-server_${VERSION}.zip"
+            ZIP_NAME="sharefs-server_${VERSION}.zip"
             # Remove old zip from destination if it exists
             rm -f "releases/windows/$ZIP_NAME"
             
@@ -298,10 +298,10 @@ if [ "$BUILD_WINDOWS" = true ] && [ "$BUILD_ZIP" = true ]; then
             # Build the installer
             makensis -NOCD installer.nsi > /dev/null
             
-            if [ -f "riscos-access-server_0.1.1-setup.exe" ]; then
-                mv riscos-access-server_0.1.1-setup.exe releases/windows/
+            if [ -f "sharefs-server_0.1.1-setup.exe" ]; then
+                mv sharefs-server_0.1.1-setup.exe releases/windows/
                 echo "✓ Windows installer created"
-                echo "  Installer: releases/windows/riscos-access-server_0.1.1-setup.exe"
+                echo "  Installer: releases/windows/sharefs-server_0.1.1-setup.exe"
             else
                 echo "Warning: NSIS installer creation failed"
             fi

@@ -1,8 +1,8 @@
-# RISC OS Access/ShareFS Server - Copilot Instructions
+# ShareFS Server - Copilot Instructions
 
 ## Project Overview
 
-This project implements an Acorn Access/ShareFS-compatible file server in C, enabling modern Linux/Windows systems to serve files to RISC OS machines over a network. It includes a wxWidgets-based Admin GUI for easy configuration and server control.
+ShareFS Server is an Acorn ShareFS-compatible file server in C, enabling modern Linux/Windows systems to serve files to RISC OS machines over a network. It includes **ShareFS Admin**, a wxWidgets-based GUI for configuration and server control. Internal APIs use the `sfs_` prefix.
 
 ## Project Structure
 
@@ -34,7 +34,7 @@ riscos-access-server/
 │       └── ControlPanel.cpp/h  # Start/stop/logs
 ├── CMakeLists.txt          # Root build configuration
 ├── mingw-w64-x86_64.cmake  # MinGW cross-compile toolchain
-├── access.conf             # Sample configuration
+├── sharefs.conf             # Sample configuration
 └── README.md
 ```
 
@@ -43,7 +43,7 @@ riscos-access-server/
 - **Server Language**: C11 with minimal dependencies (POSIX/Winsock only)
 - **Admin GUI**: wxWidgets C++ for cross-platform native look and static linking
 - **Handle limit**: Dynamic allocation (no artificial 256 limit)
-- **Configuration**: INI-style `access.conf` file
+- **Configuration**: INI-style `sharefs.conf` file
 - **Cross-compilation**: Full Windows support via MinGW-w64
 - **System Integration**: Debian package uses `systemd` and auto-configures `ufw`/`firewalld` in postinst.
 
@@ -59,12 +59,12 @@ The project now uses helper scripts for all build tasks:
 #### Build Options (`./build.sh [option]`)
 - `--all-full`: Full build (Linux, Windows Server + Admin GUI, Deb package, Win Zip).
 - `--deb`: Create Debian package (`.deb`).
-- `--zip`: Create Windows Zip (`riscos-access-server_X.Y.Z.zip`).
+- `--zip`: Create Windows Zip (`sharefs-server_X.Y.Z.zip`).
 - `--windows-full`: Windows Server + Admin GUI.
  
 #### Output Structure
 - `releases/linux/`: Linux binaries and `.deb`
-- `releases/windows/`: Windows `access.exe`, `access-admin.exe`, `access.conf`, and `.zip`
+- `releases/windows/`: Windows `sharefs-server.exe`, `sharefs-admin.exe`, `sharefs.conf`, and `.zip`
  
 ### Manual CMake (Legacy)
  
@@ -75,7 +75,7 @@ See `build.sh` source for exact CMake commands used.
 The Admin GUI uses wxWidgets with a tabbed notebook interface:
 
 - **MainFrame**: Main window, handles file menu, Apply/Revert buttons
-- **ConfigIO**: Parses and writes `access.conf` (mirrors server's config.c logic)
+- **ConfigIO**: Parses and writes `sharefs.conf` (mirrors server's config.c logic)
 - **ServerPanel**: Log level, broadcast interval, Access+ toggle
 - **SharesPanel**: CRUD for shares with attribute checkboxes
 - **PrintersPanel**: CRUD for printers with spool settings
@@ -244,9 +244,9 @@ txt = FFF
 CMake with MinGW support:
 ```cmake
 if(WIN32)
-    target_link_libraries(access ws2_32)
+    target_link_libraries(sharefs-server ws2_32)
 else()
-    target_link_libraries(access pthread)
+    target_link_libraries(sharefs-server pthread)
 endif()
 ```
 

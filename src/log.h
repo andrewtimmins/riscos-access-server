@@ -1,31 +1,31 @@
-// RISC OS Access/ShareFS Server - Logging
+// ShareFS Server - Logging
 // Author: Andrew Timmins
 // License: GPL-3.0-only
 
-#ifndef RAS_LOG_H
-#define RAS_LOG_H
+#ifndef SFS_LOG_H
+#define SFS_LOG_H
 
 #include <stdio.h>
 
 typedef enum {
-  RAS_LOG_NONE = 0,
-  RAS_LOG_ERROR,
-  RAS_LOG_INFO,
-  RAS_LOG_DEBUG,
-  RAS_LOG_PROTOCOL
-} ras_log_level;
+  SFS_LOG_NONE = 0,
+  SFS_LOG_ERROR,
+  SFS_LOG_INFO,
+  SFS_LOG_DEBUG,
+  SFS_LOG_PROTOCOL
+} sfs_log_level;
 
 // Initialize logging - opens log file
-// Linux: /var/log/access/access.log (falls back to /tmp/riscos-access.log)
-// Windows: C:/AccessServer/access.log (falls back to ./access.log)
-int ras_log_init(void);
+// Linux: /var/log/sharefs/sharefs.log (falls back to /tmp/sharefs.log)
+// Windows: C:/ShareFS/sharefs.log (falls back to ./sharefs.log)
+int sfs_log_init(void);
 
 // Shutdown logging - closes log file
-void ras_log_shutdown(void);
+void sfs_log_shutdown(void);
 
-void ras_log_set_level(ras_log_level level);
-void ras_log_set_stream(FILE *stream);
-void ras_log(ras_log_level level, const char *fmt, ...);
-ras_log_level ras_log_level_from_string(const char *s);
+void sfs_log_set_level(sfs_log_level level);
+void sfs_log_set_stream(FILE *stream);
+void sfs_log(sfs_log_level level, const char *fmt, ...);
+sfs_log_level sfs_log_level_from_string(const char *s);
 
 #endif

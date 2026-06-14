@@ -1,7 +1,8 @@
-// RISC OS Access Server - Admin GUI Control Panel
+// ShareFS Server - Admin GUI Control Panel
 
 #include "ControlPanel.h"
 #include "MainFrame.h"
+#include "UiHelpers.h"
 #include <wx/filedlg.h>
 #include <wx/filename.h>
 #include <wx/stdpaths.h>
@@ -9,7 +10,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
-#define ACCESS_SERVICE_NAME TEXT("AccessServer")
+#define SHAREFS_SERVICE_NAME TEXT("ShareFSServer")
 #endif
 
 enum {
@@ -36,31 +37,23 @@ wxBEGIN_EVENT_TABLE(ControlPanel, wxPanel)
     : wxPanel(parent), m_frame(frame), m_timer(this, ID_TIMER) {
   wxBoxSizer *mainSizer = new wxBoxSizer(wxVERTICAL);
 
-  // Title
   wxStaticText *title = new wxStaticText(this, wxID_ANY, "Server Control");
-  wxFont titleFont = title->GetFont();
-  titleFont.SetPointSize(14);
-  titleFont.SetWeight(wxFONTWEIGHT_BOLD);
-  title->SetFont(titleFont);
-  mainSizer->Add(title, 0, wxALL, 15);
+  ui::StyleSectionTitle(title);
+  mainSizer->Add(title, 0, wxLEFT | wxRIGHT | wxTOP, 15);
+  mainSizer->AddSpacer(4);
 
-  // Status section
   wxStaticBoxSizer *statusBox =
-      new wxStaticBoxSizer(wxHORIZONTAL, this, "Status");
+      new wxStaticBoxSizer(wxVERTICAL, this, "Status");
 
-  wxBoxSizer *statusLeft = new wxBoxSizer(wxVERTICAL);
+  wxBoxSizer *statusRow = new wxBoxSizer(wxHORIZONTAL);
   m_statusLabel = new wxStaticText(this, wxID_ANY, "Stopped");
   wxFont statusFont = m_statusLabel->GetFont();
-  statusFont.SetPointSize(12);
+  statusFont.SetPointSize(statusFont.GetPointSize() + 1);
   statusFont.SetWeight(wxFONTWEIGHT_BOLD);
   m_statusLabel->SetFont(statusFont);
   m_statusLabel->SetForegroundColour(*wxRED);
-  statusLeft->Add(m_statusLabel, 0);
-
-  m_pidLabel = new wxStaticText(this, wxID_ANY, "");
-  m_pidLabel->SetForegroundColour(wxColour(100, 100, 100));
-  statusLeft->Add(m_pidLabel, 0, wxTOP, 3);
-  statusBox->Add(statusLeft, 1, wxALL, 10);
+  m_statusLabel->SetMinSize(wxSize(280, -1));
+  statusRow->Add(m_statusLabel, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, 12);
 
   wxBoxSizer *buttonSizer = new wxBoxSizer(wxHORIZONTAL);
   m_startBtn = new wxButton(this, ID_START, "Start");
@@ -71,7 +64,12 @@ wxBEGIN_EVENT_TABLE(ControlPanel, wxPanel)
   buttonSizer->Add(m_startBtn, 0, wxRIGHT, 5);
   buttonSizer->Add(m_stopBtn, 0, wxRIGHT, 5);
   buttonSizer->Add(m_restartBtn, 0);
-  statusBox->Add(buttonSizer, 0, wxALL | wxALIGN_CENTER_VERTICAL, 10);
+  statusRow->Add(buttonSizer, 0, wxALIGN_CENTER_VERTICAL);
+  statusBox->Add(statusRow, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 10);
+
+  m_pidLabel = new wxStaticText(this, wxID_ANY, "");
+  m_pidLabel->SetForegroundColour(ui::MutedText(this));
+  statusBox->Add(m_pidLabel, 0, wxALL, 10);
 
   mainSizer->Add(statusBox, 0, wxEXPAND | wxLEFT | wxRIGHT, 15);
 
@@ -86,9 +84,9 @@ wxBEGIN_EVENT_TABLE(ControlPanel, wxPanel)
 #ifdef __WXMSW__
     wxString pd;
     if (!wxGetEnv("ProgramData", &pd) || pd.empty()) pd = "C:";
-    defaultConfig = pd + "\\AccessServer\\access.conf";
+    defaultConfig = pd + "\\ShareFS\\sharefs.conf";
 #else
-    defaultConfig = "/etc/riscos-access-server/access.conf";
+    defaultConfig = "/etc/sharefs.conf";
 #endif
     m_configPath = new wxTextCtrl(this, wxID_ANY, defaultConfig);
   }
@@ -232,7 +230,7 @@ void ControlPanel::ReadProcessOutput() {
 bool ControlPanel::CheckSystemdStatus() {
 #ifdef __WXGTK__
   // silent check, returns 0 if active
-  return wxExecute("systemctl is-active --quiet riscos-access-server",
+  return wxExecute("systemctl is-active --quiet sharefs",
                    wxEXEC_SYNC | wxEXEC_NOEVENTS) == 0;
 #else
   return false;
@@ -246,7 +244,7 @@ bool ControlPanel::CheckWindowsServiceStatus() {
     return false;
 
   SC_HANDLE service =
-      OpenService(scm, ACCESS_SERVICE_NAME, SERVICE_QUERY_STATUS);
+      OpenService(scm, SHAREFS_SERVICE_NAME, SERVICE_QUERY_STATUS);
   if (!service) {
     CloseServiceHandle(scm);
     return false;
@@ -269,7 +267,7 @@ bool ControlPanel::IsWindowsServiceInstalled() {
     return false;
 
   SC_HANDLE service =
-      OpenService(scm, ACCESS_SERVICE_NAME, SERVICE_QUERY_STATUS);
+      OpenService(scm, SHAREFS_SERVICE_NAME, SERVICE_QUERY_STATUS);
   bool installed = (service != NULL);
 
   if (service)
@@ -284,7 +282,7 @@ bool ControlPanel::StartWindowsService() {
     return false;
 
   SC_HANDLE service =
-      OpenService(scm, ACCESS_SERVICE_NAME, SERVICE_START | SERVICE_QUERY_STATUS);
+      OpenService(scm, SHAREFS_SERVICE_NAME, SERVICE_START | SERVICE_QUERY_STATUS);
   if (!service) {
     CloseServiceHandle(scm);
     return false;
@@ -316,7 +314,7 @@ bool ControlPanel::StopWindowsService() {
     return false;
 
   SC_HANDLE service =
-      OpenService(scm, ACCESS_SERVICE_NAME, SERVICE_STOP | SERVICE_QUERY_STATUS);
+      OpenService(scm, SHAREFS_SERVICE_NAME, SERVICE_STOP | SERVICE_QUERY_STATUS);
   if (!service) {
     CloseServiceHandle(scm);
     return false;
@@ -369,7 +367,7 @@ void ControlPanel::OnStart(wxCommandEvent &event) {
 
   // Check if systemd is available and try to start that way first on Linux
 #ifdef __WXGTK__
-  if (wxExecute("systemctl list-unit-files riscos-access-server.service",
+  if (wxExecute("systemctl list-unit-files sharefs.service",
                 wxEXEC_SYNC | wxEXEC_NOEVENTS) == 0) {
     AppendLog("[ADMIN] Attempting to start system service...\n");
     wxString display, waylandDisplay;
@@ -378,7 +376,7 @@ void ControlPanel::OnStart(wxCommandEvent &event) {
       AppendLog("[WARN] No graphical display detected; pkexec elevation may fail.\n");
     }
     long ret =
-        wxExecute("pkexec systemctl start riscos-access-server", wxEXEC_SYNC);
+        wxExecute("pkexec systemctl start sharefs", wxEXEC_SYNC);
     if (ret == 0 || CheckSystemdStatus()) {
       AppendLog("[ADMIN] System service started.\n");
       UpdateStatus();
@@ -396,31 +394,31 @@ void ControlPanel::OnStart(wxCommandEvent &event) {
     return;
   }
 
-  // Find the access server binary; search common locations in priority order
+  // Find the ShareFS Server binary; search common locations in priority order
   wxFileName exePath(wxStandardPaths::Get().GetExecutablePath());
   wxString exeDir = exePath.GetPath();
   wxString sep = wxFileName::GetPathSeparator();
 
   wxArrayString candidates;
-  candidates.Add(exeDir + sep + ".." + sep + "src" + sep + "access");
-  candidates.Add(exeDir + sep + "access");
+  candidates.Add(exeDir + sep + ".." + sep + "src" + sep + "sharefs-server");
+  candidates.Add(exeDir + sep + "sharefs-server");
 #ifndef _WIN32
-  candidates.Add("/usr/local/bin/access");
-  candidates.Add("/usr/bin/access");
+  candidates.Add("/usr/local/bin/sharefs-server");
+  candidates.Add("/usr/bin/sharefs-server");
 #else
-  candidates.Add("C:\\AccessServer\\access.exe");
+  candidates.Add("C:\\ShareFS\\sharefs-server.exe");
 #endif
 
-  wxString accessPath = "access"; // fallback: search PATH
+  wxString serverPath = "sharefs-server"; // fallback: search PATH
   for (size_t i = 0; i < candidates.GetCount(); ++i) {
     if (wxFileExists(candidates[i])) {
-      accessPath = candidates[i];
+      serverPath = candidates[i];
       break;
     }
   }
 
   // Build command
-  wxString cmd = accessPath;
+  wxString cmd = serverPath;
   cmd += " " + config;
 
   // Create process
@@ -474,7 +472,7 @@ void ControlPanel::StopServer() {
     AppendLog("[ADMIN] Stopping system service...\n");
 #ifdef __WXGTK__
     long ret =
-        wxExecute("pkexec systemctl stop riscos-access-server", wxEXEC_SYNC);
+        wxExecute("pkexec systemctl stop sharefs", wxEXEC_SYNC);
     if (ret == 0) {
       AppendLog("[ADMIN] System service stopped.\n");
     } else {
@@ -538,7 +536,7 @@ void ControlPanel::RestartServer() {
   if (m_isSystemd) {
     AppendLog("[ADMIN] Restarting system service...\n");
 #ifdef __WXGTK__
-    wxExecute("pkexec systemctl restart riscos-access-server", wxEXEC_SYNC);
+    wxExecute("pkexec systemctl restart sharefs", wxEXEC_SYNC);
 #endif
     UpdateStatus(); // timer will confirm state shortly
   } else {

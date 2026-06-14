@@ -1,4 +1,4 @@
-// RISC OS Access/ShareFS Server - Configuration
+// ShareFS Server - Configuration
 // Author: Andrew Timmins
 // License: GPL-3.0-only
 
@@ -11,7 +11,7 @@
 
 #define LINE_BUF 512
 
-static char *ras_strdup(const char *s) {
+static char *sfs_strdup(const char *s) {
   if (!s)
     return NULL;
   size_t len = strlen(s);
@@ -34,7 +34,7 @@ static char *trim(char *s) {
   return s;
 }
 
-static void free_share(ras_share_config *s) {
+static void free_share(sfs_share_config *s) {
   if (!s)
     return;
   free(s->name);
@@ -43,7 +43,7 @@ static void free_share(ras_share_config *s) {
   free(s->default_type);
 }
 
-static void free_printer(ras_printer_config *p) {
+static void free_printer(sfs_printer_config *p) {
   if (!p)
     return;
   free(p->name);
@@ -53,45 +53,45 @@ static void free_printer(ras_printer_config *p) {
   free(p->command);
 }
 
-static void free_mime(ras_mime_entry *m) {
+static void free_mime(sfs_mime_entry *m) {
   if (!m)
     return;
   free(m->ext);
   free(m->filetype);
 }
 
-static int grow_shares(ras_config *cfg) {
+static int grow_shares(sfs_config *cfg) {
   size_t n = cfg->share_count + 1;
-  ras_share_config *p =
-      (ras_share_config *)realloc(cfg->shares, n * sizeof(ras_share_config));
+  sfs_share_config *p =
+      (sfs_share_config *)realloc(cfg->shares, n * sizeof(sfs_share_config));
   if (!p)
     return -1;
   cfg->shares = p;
-  memset(&cfg->shares[n - 1], 0, sizeof(ras_share_config));
+  memset(&cfg->shares[n - 1], 0, sizeof(sfs_share_config));
   cfg->share_count = n;
   return 0;
 }
 
-static int grow_printers(ras_config *cfg) {
+static int grow_printers(sfs_config *cfg) {
   size_t n = cfg->printer_count + 1;
-  ras_printer_config *p = (ras_printer_config *)realloc(
-      cfg->printers, n * sizeof(ras_printer_config));
+  sfs_printer_config *p = (sfs_printer_config *)realloc(
+      cfg->printers, n * sizeof(sfs_printer_config));
   if (!p)
     return -1;
   cfg->printers = p;
-  memset(&cfg->printers[n - 1], 0, sizeof(ras_printer_config));
+  memset(&cfg->printers[n - 1], 0, sizeof(sfs_printer_config));
   cfg->printer_count = n;
   return 0;
 }
 
-static int grow_mime(ras_config *cfg) {
+static int grow_mime(sfs_config *cfg) {
   size_t n = cfg->mimemap_count + 1;
-  ras_mime_entry *p =
-      (ras_mime_entry *)realloc(cfg->mimemap, n * sizeof(ras_mime_entry));
+  sfs_mime_entry *p =
+      (sfs_mime_entry *)realloc(cfg->mimemap, n * sizeof(sfs_mime_entry));
   if (!p)
     return -1;
   cfg->mimemap = p;
-  memset(&cfg->mimemap[n - 1], 0, sizeof(ras_mime_entry));
+  memset(&cfg->mimemap[n - 1], 0, sizeof(sfs_mime_entry));
   cfg->mimemap_count = n;
   return 0;
 }
@@ -123,21 +123,21 @@ static uint32_t parse_share_attrs(const char *val) {
   uint32_t attrs = 0;
   if (!val)
     return attrs;
-  char *dup = ras_strdup(val);
+  char *dup = sfs_strdup(val);
   if (!dup)
     return attrs;
   char *tok = strtok(dup, ", \t");
   while (tok) {
     if (str_ieq(tok, "protected"))
-      attrs |= RAS_ATTR_PROTECTED;
+      attrs |= SFS_ATTR_PROTECTED;
     else if (str_ieq(tok, "readonly"))
-      attrs |= RAS_ATTR_READONLY;
+      attrs |= SFS_ATTR_READONLY;
     else if (str_ieq(tok, "hidden"))
-      attrs |= RAS_ATTR_HIDDEN;
+      attrs |= SFS_ATTR_HIDDEN;
     else if (str_ieq(tok, "subdir"))
-      attrs |= RAS_ATTR_SUBDIR;
+      attrs |= SFS_ATTR_SUBDIR;
     else if (str_ieq(tok, "cdrom"))
-      attrs |= RAS_ATTR_CDROM;
+      attrs |= SFS_ATTR_CDROM;
     tok = strtok(NULL, ", \t");
   }
   free(dup);
@@ -165,19 +165,19 @@ static int parse_section(const char *label, char *kind, size_t kind_sz,
   return 0;
 }
 
-int ras_config_load(const char *path, ras_config *out) {
+int sfs_config_load(const char *path, sfs_config *out) {
   if (!path || !out) {
     return -1;
   }
 
   memset(out, 0, sizeof(*out));
-  out->server.log_level = ras_strdup("info");
+  out->server.log_level = sfs_strdup("info");
   out->server.broadcast_interval = 3;
   out->server.access_plus = 1;
 
   FILE *fp = fopen(path, "r");
   if (!fp) {
-    ras_config_unload(out);
+    sfs_config_unload(out);
     return -1;
   }
 
@@ -206,13 +206,13 @@ int ras_config_load(const char *path, ras_config *out) {
           status = -1;
           break;
         }
-        out->shares[out->share_count - 1].name = ras_strdup(section_name);
+        out->shares[out->share_count - 1].name = sfs_strdup(section_name);
       } else if (strcmp(section_kind, "printer") == 0) {
         if (grow_printers(out) != 0) {
           status = -1;
           break;
         }
-        out->printers[out->printer_count - 1].name = ras_strdup(section_name);
+        out->printers[out->printer_count - 1].name = sfs_strdup(section_name);
         out->printers[out->printer_count - 1].poll_interval = 5;
       }
       continue;
@@ -228,10 +228,10 @@ int ras_config_load(const char *path, ras_config *out) {
     if (strcmp(section_kind, "server") == 0) {
       if (strcmp(key, "log_level") == 0) {
         free(out->server.log_level);
-        out->server.log_level = ras_strdup(val);
+        out->server.log_level = sfs_strdup(val);
       } else if (strcmp(key, "bind_ip") == 0) {
         free(out->server.bind_ip);
-        out->server.bind_ip = ras_strdup(val);
+        out->server.bind_ip = sfs_strdup(val);
       } else if (strcmp(key, "broadcast_interval") == 0) {
         parse_int(val, &out->server.broadcast_interval);
       } else if (strcmp(key, "access_plus") == 0) {
@@ -239,56 +239,56 @@ int ras_config_load(const char *path, ras_config *out) {
             (str_ieq(val, "true") || strcmp(val, "1") == 0) ? 1 : 0;
       }
     } else if (strcmp(section_kind, "share") == 0 && out->share_count > 0) {
-      ras_share_config *c = &out->shares[out->share_count - 1];
+      sfs_share_config *c = &out->shares[out->share_count - 1];
       if (strcmp(key, "path") == 0) {
         free(c->path);
-        c->path = ras_strdup(val);
+        c->path = sfs_strdup(val);
       } else if (strcmp(key, "attributes") == 0) {
         c->attributes = parse_share_attrs(val);
       } else if (strcmp(key, "password") == 0) {
         free(c->password);
-        c->password = ras_strdup(val);
+        c->password = sfs_strdup(val);
       } else if (strcmp(key, "default_filetype") == 0 ||
                  strcmp(key, "default_type") == 0) {
         free(c->default_type);
-        c->default_type = ras_strdup(val);
+        c->default_type = sfs_strdup(val);
       }
     } else if (strcmp(section_kind, "printer") == 0 && out->printer_count > 0) {
-      ras_printer_config *p = &out->printers[out->printer_count - 1];
+      sfs_printer_config *p = &out->printers[out->printer_count - 1];
       if (strcmp(key, "path") == 0) {
         free(p->path);
-        p->path = ras_strdup(val);
+        p->path = sfs_strdup(val);
       } else if (strcmp(key, "definition") == 0) {
         free(p->definition);
-        p->definition = ras_strdup(val);
+        p->definition = sfs_strdup(val);
       } else if (strcmp(key, "description") == 0) {
         free(p->description);
-        p->description = ras_strdup(val);
+        p->description = sfs_strdup(val);
       } else if (strcmp(key, "poll_interval") == 0) {
         parse_int(val, &p->poll_interval);
       } else if (strcmp(key, "command") == 0) {
         free(p->command);
-        p->command = ras_strdup(val);
+        p->command = sfs_strdup(val);
       }
     } else if (strcmp(section_kind, "mimemap") == 0) {
       if (grow_mime(out) != 0) {
         status = -1;
         break;
       }
-      ras_mime_entry *m = &out->mimemap[out->mimemap_count - 1];
-      m->ext = ras_strdup(key);
-      m->filetype = ras_strdup(val);
+      sfs_mime_entry *m = &out->mimemap[out->mimemap_count - 1];
+      m->ext = sfs_strdup(key);
+      m->filetype = sfs_strdup(val);
     }
   }
 
   fclose(fp);
   if (status != 0) {
-    ras_config_unload(out);
+    sfs_config_unload(out);
   }
   return status;
 }
 
-void ras_config_unload(ras_config *cfg) {
+void sfs_config_unload(sfs_config *cfg) {
   if (!cfg)
     return;
 
@@ -312,19 +312,19 @@ void ras_config_unload(ras_config *cfg) {
   memset(cfg, 0, sizeof(*cfg));
 }
 
-int ras_config_validate(const ras_config *cfg) {
+int sfs_config_validate(const sfs_config *cfg) {
   if (!cfg)
     return -1;
 
   for (size_t i = 0; i < cfg->share_count; ++i) {
-    const ras_share_config *s = &cfg->shares[i];
+    const sfs_share_config *s = &cfg->shares[i];
     if (!s->name || !s->path || s->name[0] == '\0' || s->path[0] == '\0') {
       return -1;
     }
   }
 
   for (size_t i = 0; i < cfg->printer_count; ++i) {
-    const ras_printer_config *p = &cfg->printers[i];
+    const sfs_printer_config *p = &cfg->printers[i];
     if (!p->name || !p->path || !p->definition || !p->command ||
         p->name[0] == '\0' || p->path[0] == '\0' || p->definition[0] == '\0' ||
         p->command[0] == '\0') {

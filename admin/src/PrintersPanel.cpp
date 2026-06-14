@@ -1,7 +1,8 @@
-// RISC OS Access Server - Admin GUI Printers Panel
+// ShareFS Server - Admin GUI Printers Panel
 
 #include "PrintersPanel.h"
 #include "MainFrame.h"
+#include "UiHelpers.h"
 #include <wx/dirdlg.h>
 #include <wx/filedlg.h>
 
@@ -18,24 +19,26 @@ PrintersPanel::PrintersPanel(wxWindow *parent, MainFrame *frame)
   // Title and buttons
   wxBoxSizer *headerSizer = new wxBoxSizer(wxHORIZONTAL);
   wxStaticText *title = new wxStaticText(this, wxID_ANY, "Printers");
-  wxFont titleFont = title->GetFont();
-  titleFont.SetPointSize(14);
-  titleFont.SetWeight(wxFONTWEIGHT_BOLD);
-  title->SetFont(titleFont);
-  headerSizer->Add(title, 1, wxALIGN_CENTER_VERTICAL);
+  ui::StyleSectionTitle(title);
+  headerSizer->Add(title, 1, wxALIGN_CENTER_VERTICAL | wxBOTTOM, 4);
 
   wxButton *addBtn = new wxButton(this, ID_ADD_PRINTER, "Add");
   wxButton *removeBtn = new wxButton(this, ID_REMOVE_PRINTER, "Remove");
   headerSizer->Add(addBtn, 0, wxLEFT, 5);
   headerSizer->Add(removeBtn, 0, wxLEFT, 5);
-  mainSizer->Add(headerSizer, 0, wxEXPAND | wxALL, 15);
+  mainSizer->Add(headerSizer, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 15);
+  mainSizer->AddSpacer(4);
 
-  // Split view
   wxBoxSizer *contentSizer = new wxBoxSizer(wxHORIZONTAL);
 
-  m_list = new wxListCtrl(this, ID_PRINTER_LIST, wxDefaultPosition,
-                          wxSize(200, -1), wxLC_REPORT | wxLC_SINGLE_SEL);
+  m_list = new wxListCtrl(this, ID_PRINTER_LIST, wxDefaultPosition, wxDefaultSize,
+                          wxLC_REPORT | wxLC_SINGLE_SEL);
+  m_list->SetMinSize(wxSize(260, 160));
   m_list->InsertColumn(0, "Printer Name", wxLIST_FORMAT_LEFT, 180);
+  m_list->Bind(wxEVT_SIZE, [this](wxSizeEvent &e) {
+    e.Skip();
+    ui::ResizeListColumns(m_list);
+  });
   contentSizer->Add(m_list, 0, wxEXPAND | wxRIGHT, 10);
 
   // Detail panel
@@ -138,9 +141,14 @@ PrintersPanel::PrintersPanel(wxWindow *parent, MainFrame *frame)
 
 void PrintersPanel::RefreshFromConfig() {
   RefreshList();
-  m_currentIndex = -1;
-  m_detailPanel->Hide();
-  Layout();
+  if (m_list->GetItemCount() > 0) {
+    m_list->SetItemState(0, wxLIST_STATE_SELECTED, wxLIST_STATE_SELECTED);
+    ShowDetails(0);
+  } else {
+    m_currentIndex = -1;
+    m_detailPanel->Hide();
+    Layout();
+  }
 }
 
 void PrintersPanel::RefreshList() {

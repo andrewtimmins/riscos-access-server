@@ -1,7 +1,8 @@
-// RISC OS Access Server - Admin GUI Server Panel
+// ShareFS Server - Admin GUI Server Panel
 
 #include "ServerPanel.h"
 #include "MainFrame.h"
+#include "UiHelpers.h"
 #include <wx/spinctrl.h>
 #include <wx/statbox.h>
 
@@ -22,13 +23,10 @@ ServerPanel::ServerPanel(wxWindow *parent, MainFrame *frame)
     : wxPanel(parent), m_frame(frame) {
   wxBoxSizer *mainSizer = new wxBoxSizer(wxVERTICAL);
 
-  // Title
   wxStaticText *title = new wxStaticText(this, wxID_ANY, "Server Settings");
-  wxFont titleFont = title->GetFont();
-  titleFont.SetPointSize(14);
-  titleFont.SetWeight(wxFONTWEIGHT_BOLD);
-  title->SetFont(titleFont);
-  mainSizer->Add(title, 0, wxALL, 15);
+  ui::StyleSectionTitle(title);
+  mainSizer->Add(title, 0, wxLEFT | wxRIGHT | wxTOP, 15);
+  mainSizer->AddSpacer(4);
 
   // Settings group
   wxStaticBoxSizer *settingsBox =

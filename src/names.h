@@ -1,9 +1,9 @@
-// RISC OS Access/ShareFS Server - Filename Encoding
+// ShareFS Server - Filename Encoding
 // Author: Andrew Timmins
 // License: GPL-3.0-only
 
-#ifndef RAS_NAMES_H
-#define RAS_NAMES_H
+#ifndef SFS_NAMES_H
+#define SFS_NAMES_H
 
 #include <stddef.h>
 
@@ -21,10 +21,10 @@
 //
 // Returns 0 on success, -1 if out buffer is too small (output undefined).
 // out_sz must be at least 1.
-int ras_encode_host_name(const char *ros_name, char *out, size_t out_sz);
+int sfs_encode_host_name(const char *ros_name, char *out, size_t out_sz);
 
 // Decode a host filesystem filename component back to a RISC OS display name.
-// Reverses ras_encode_host_name:
+// Reverses sfs_encode_host_name:
 //   '.'  -> '/'    (dot becomes RISC OS slash-in-name)
 //   0xA0 -> ' '    (non-breaking space becomes space)
 //   %XX  -> byte   (percent-decoded)
@@ -32,6 +32,6 @@ int ras_encode_host_name(const char *ros_name, char *out, size_t out_sz);
 //
 // Returns 0 on success, -1 if out buffer is too small (output undefined).
 // out_sz must be at least 1.
-int ras_decode_host_name(const char *host_name, char *out, size_t out_sz);
+int sfs_decode_host_name(const char *host_name, char *out, size_t out_sz);
 
 #endif

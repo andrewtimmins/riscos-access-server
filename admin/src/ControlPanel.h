@@ -1,4 +1,4 @@
-// RISC OS Access Server - Admin GUI Control Panel
+// ShareFS Server - Admin GUI Control Panel
 
 #ifndef CONTROLPANEL_H
 #define CONTROLPANEL_H

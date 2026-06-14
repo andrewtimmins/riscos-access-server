@@ -3,40 +3,35 @@ set -e
 
 case "$1" in
     configure)
-        # Create default config if it doesn't exist
-        if [ ! -f /etc/access.conf ]; then
-            cp /usr/share/riscos-access-server/access.conf.sample /etc/access.conf
-            chmod 644 /etc/access.conf
+        if [ ! -f /etc/sharefs.conf ]; then
+            cp /usr/share/sharefs/sharefs.conf.sample /etc/sharefs.conf
+            chmod 644 /etc/sharefs.conf
         fi
 
-        # Create admin group for config edits and service control
-        if ! getent group access-admin >/dev/null; then
-            addgroup --system access-admin
+        if ! getent group sharefs-admin >/dev/null; then
+            addgroup --system sharefs-admin
         fi
-        chown root:access-admin /etc/access.conf
-        chmod 664 /etc/access.conf
+        chown root:sharefs-admin /etc/sharefs.conf
+        chmod 664 /etc/sharefs.conf
 
-        # Allow access-admin group to manage the service without sudo
         install -d -m 755 /etc/polkit-1/rules.d
-        cat >/etc/polkit-1/rules.d/90-access-server.rules <<'EOF'
+        cat >/etc/polkit-1/rules.d/90-sharefs-server.rules <<'EOF'
 polkit.addRule(function(action, subject) {
   if (action.id == "org.freedesktop.systemd1.manage-units" &&
-      action.lookup("unit") == "access.service" &&
-      subject.isInGroup("access-admin")) {
+      action.lookup("unit") == "sharefs.service" &&
+      subject.isInGroup("sharefs-admin")) {
     return polkit.Result.YES;
   }
 });
 EOF
-        chmod 644 /etc/polkit-1/rules.d/90-access-server.rules
+        chmod 644 /etc/polkit-1/rules.d/90-sharefs-server.rules
 
-        # Create log directory
-        mkdir -p /var/log/access
-        chmod 755 /var/log/access
-        
-        mkdir -p /srv/riscos-share/Public
-        chmod 1777 /srv/riscos-share/Public
-        
-        # Configure Firewall (Best effort)
+        mkdir -p /var/log/sharefs
+        chmod 755 /var/log/sharefs
+
+        mkdir -p /srv/sharefs/Public
+        chmod 1777 /srv/sharefs/Public
+
         if command -v ufw >/dev/null; then
             ufw allow 32770/udp >/dev/null 2>&1 || true
             ufw allow 32771/udp >/dev/null 2>&1 || true
@@ -47,11 +42,10 @@ EOF
             firewall-cmd --permanent --add-port=49171/udp >/dev/null 2>&1 || true
             firewall-cmd --reload >/dev/null 2>&1 || true
         fi
-        
-        # Reload systemd and enable service
+
         systemctl daemon-reload
-        systemctl enable access.service
-        systemctl start access.service || true
+        systemctl enable sharefs.service
+        systemctl start sharefs.service || true
         ;;
 esac
 

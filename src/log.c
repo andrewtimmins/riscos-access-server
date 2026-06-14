@@ -1,4 +1,4 @@
-// RISC OS Access/ShareFS Server - Logging
+// ShareFS Server - Logging
 // Author: Andrew Timmins
 // License: GPL-3.0-only
 
@@ -11,25 +11,25 @@
 
 #ifdef _WIN32
 #include <direct.h>
-#define LOG_PATH "C:/AccessServer/access.log"
-#define FALLBACK_LOG_PATH "./access.log"
+#define LOG_PATH "C:/ShareFS/sharefs.log"
+#define FALLBACK_LOG_PATH "./sharefs.log"
 #else
 #include <sys/stat.h>
-#define LOG_DIR "/var/log/access"
-#define LOG_PATH "/var/log/access/access.log"
-#define FALLBACK_LOG_PATH "/tmp/riscos-access.log"
+#define LOG_DIR "/var/log/sharefs"
+#define LOG_PATH "/var/log/sharefs/sharefs.log"
+#define FALLBACK_LOG_PATH "/tmp/sharefs.log"
 #endif
 
-static ras_log_level g_level = RAS_LOG_INFO;
+static sfs_log_level g_level = SFS_LOG_INFO;
 static FILE *g_stream = NULL;
 static FILE *g_log_file = NULL;
 
 static const char *level_names[] = {"NONE", "ERROR", "INFO", "DEBUG", "PROTO"};
 
-int ras_log_init(void) {
+int sfs_log_init(void) {
 #ifdef _WIN32
   // Ensure log directory exists (best effort)
-  _mkdir("C:/AccessServer");
+  _mkdir("C:/ShareFS");
 #else
   // Create log directory if it doesn't exist
   struct stat st;
@@ -61,7 +61,7 @@ int ras_log_init(void) {
   return 0;
 }
 
-void ras_log_shutdown(void) {
+void sfs_log_shutdown(void) {
   if (g_log_file) {
     fclose(g_log_file);
     g_log_file = NULL;
@@ -69,28 +69,28 @@ void ras_log_shutdown(void) {
   }
 }
 
-ras_log_level ras_log_level_from_string(const char *s) {
+sfs_log_level sfs_log_level_from_string(const char *s) {
   if (!s)
-    return RAS_LOG_INFO;
+    return SFS_LOG_INFO;
   if (strcmp(s, "none") == 0)
-    return RAS_LOG_NONE;
+    return SFS_LOG_NONE;
   if (strcmp(s, "error") == 0)
-    return RAS_LOG_ERROR;
+    return SFS_LOG_ERROR;
   if (strcmp(s, "info") == 0)
-    return RAS_LOG_INFO;
+    return SFS_LOG_INFO;
   if (strcmp(s, "debug") == 0)
-    return RAS_LOG_DEBUG;
+    return SFS_LOG_DEBUG;
   if (strcmp(s, "protocol") == 0)
-    return RAS_LOG_PROTOCOL;
-  return RAS_LOG_INFO;
+    return SFS_LOG_PROTOCOL;
+  return SFS_LOG_INFO;
 }
 
-void ras_log_set_level(ras_log_level level) { g_level = level; }
+void sfs_log_set_level(sfs_log_level level) { g_level = level; }
 
-void ras_log_set_stream(FILE *stream) { g_stream = stream; }
+void sfs_log_set_stream(FILE *stream) { g_stream = stream; }
 
-void ras_log(ras_log_level level, const char *fmt, ...) {
-  if (level > g_level || level == RAS_LOG_NONE) {
+void sfs_log(sfs_log_level level, const char *fmt, ...) {
+  if (level > g_level || level == SFS_LOG_NONE) {
     return;
   }
 
@@ -106,7 +106,7 @@ void ras_log(ras_log_level level, const char *fmt, ...) {
 
   // Get level name
   const char *level_name =
-      (level >= 0 && level <= RAS_LOG_PROTOCOL) ? level_names[level] : "?";
+      (level >= 0 && level <= SFS_LOG_PROTOCOL) ? level_names[level] : "?";
 
   // Print timestamp and level prefix
   fprintf(out, "[%s] %s: ", timestamp, level_name);

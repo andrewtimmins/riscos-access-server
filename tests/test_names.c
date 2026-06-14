@@ -1,4 +1,4 @@
-// RISC OS Access/ShareFS Server - Unit tests for names.c
+// ShareFS Server - Unit tests for names.c
 // Build: included via tests/CMakeLists.txt
 
 #include "../src/names.h"
@@ -13,7 +13,7 @@
 
 static void encode_expect(const char *input, const char *want) {
     char out[1024];
-    int rc = ras_encode_host_name(input, out, sizeof(out));
+    int rc = sfs_encode_host_name(input, out, sizeof(out));
     if (rc != 0 || strcmp(out, want) != 0) {
         fprintf(stderr, "FAIL encode(%s): got '%s' want '%s' rc=%d\n",
                 input, rc == 0 ? out : "<error>", want, rc);
@@ -23,7 +23,7 @@ static void encode_expect(const char *input, const char *want) {
 
 static void decode_expect(const char *input, const char *want) {
     char out[1024];
-    int rc = ras_decode_host_name(input, out, sizeof(out));
+    int rc = sfs_decode_host_name(input, out, sizeof(out));
     if (rc != 0 || strcmp(out, want) != 0) {
         fprintf(stderr, "FAIL decode(%s): got '%s' want '%s' rc=%d\n",
                 input, rc == 0 ? out : "<error>", want, rc);
@@ -35,12 +35,12 @@ static void decode_expect(const char *input, const char *want) {
 static void roundtrip(const char *ros_name) {
     char encoded[1024];
     char decoded[1024];
-    int rc1 = ras_encode_host_name(ros_name, encoded, sizeof(encoded));
+    int rc1 = sfs_encode_host_name(ros_name, encoded, sizeof(encoded));
     if (rc1 != 0) {
         fprintf(stderr, "FAIL roundtrip encode(%s)\n", ros_name);
         assert(0);
     }
-    int rc2 = ras_decode_host_name(encoded, decoded, sizeof(decoded));
+    int rc2 = sfs_decode_host_name(encoded, decoded, sizeof(decoded));
     if (rc2 != 0 || strcmp(decoded, ros_name) != 0) {
         fprintf(stderr, "FAIL roundtrip(%s): encoded='%s' decoded='%s'\n",
                 ros_name, encoded, decoded);
@@ -94,7 +94,7 @@ static void test_encode_ntfs_forbidden(void) {
 static void test_encode_control_chars(void) {
     char in[4] = {0x01, 'x', 0x1F, '\0'};
     char out[32];
-    assert(ras_encode_host_name(in, out, sizeof(out)) == 0);
+    assert(sfs_encode_host_name(in, out, sizeof(out)) == 0);
     // 0x01 -> %01, 0x1F -> %1F
     assert(strcmp(out, "%01x%1F") == 0);
 }
@@ -199,13 +199,13 @@ static void test_buffer_too_small(void) {
     char big[32];
 
     // "hello" needs 6 bytes (5 + NUL); buf of 4 should fail
-    assert(ras_encode_host_name("hello", small, 4) == -1);
-    assert(ras_encode_host_name("hello", big, 6) == 0);
+    assert(sfs_encode_host_name("hello", small, 4) == -1);
+    assert(sfs_encode_host_name("hello", big, 6) == 0);
     assert(strcmp(big, "hello") == 0);
 
     // Decode: ">>" needs 3 bytes (2 + NUL) decoded from "%3E%3E"
-    assert(ras_decode_host_name("%3E%3E", small, 2) == -1);
-    assert(ras_decode_host_name("%3E%3E", big, 3) == 0);
+    assert(sfs_decode_host_name("%3E%3E", small, 2) == -1);
+    assert(sfs_decode_host_name("%3E%3E", big, 3) == 0);
     assert(strcmp(big, ">>") == 0);
 }
 

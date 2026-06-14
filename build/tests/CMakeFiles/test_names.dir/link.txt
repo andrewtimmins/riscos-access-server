@@ -1,0 +1,1 @@
+/usr/bin/cc CMakeFiles/test_names.dir/test_names.c.o CMakeFiles/test_names.dir/__/src/names.c.o -o test_names 

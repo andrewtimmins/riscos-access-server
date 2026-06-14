@@ -1,9 +1,9 @@
-// RISC OS Access/ShareFS Server - Platform Abstraction
+// ShareFS Server - Platform Abstraction
 // Author: Andrew Timmins
 // License: GPL-3.0-only
 
-#ifndef RAS_PLATFORM_H
-#define RAS_PLATFORM_H
+#ifndef SFS_PLATFORM_H
+#define SFS_PLATFORM_H
 
 #include <stdint.h>
 
@@ -13,33 +13,33 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
-typedef SOCKET ras_socket;
-#define RAS_INVALID_SOCKET INVALID_SOCKET
+typedef SOCKET sfs_socket;
+#define SFS_INVALID_SOCKET INVALID_SOCKET
 #else
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 
-typedef int ras_socket;
-#define RAS_INVALID_SOCKET (-1)
+typedef int sfs_socket;
+#define SFS_INVALID_SOCKET (-1)
 #endif
 
-int ras_platform_init(void);
-void ras_platform_shutdown(void);
-void ras_sleep_ms(int ms);
-int ras_mkdir(const char *path);
+int sfs_platform_init(void);
+void sfs_platform_shutdown(void);
+void sfs_sleep_ms(int ms);
+int sfs_mkdir(const char *path);
 
 // Cross-platform filesystem info
 typedef struct {
   uint64_t free_bytes;
   uint64_t total_bytes;
   uint32_t block_size;
-} ras_fsinfo;
+} sfs_fsinfo;
 
-int ras_get_fsinfo(const char *path, ras_fsinfo *info);
+int sfs_get_fsinfo(const char *path, sfs_fsinfo *info);
 
 // Cross-platform utime
-int ras_set_mtime(const char *path, time_t mtime);
+int sfs_set_mtime(const char *path, time_t mtime);
 
 #endif

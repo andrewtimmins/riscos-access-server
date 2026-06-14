@@ -1,4 +1,4 @@
-// RISC OS Access/ShareFS Server - Access+ Authentication
+// ShareFS Server - Access+ Authentication
 // Author: Andrew Timmins
 // License: GPL-3.0-only
 
@@ -16,7 +16,7 @@ static int encode_char(char c) {
     return 0;
 }
 
-int ras_password_to_pin(const char *password) {
+int sfs_password_to_pin(const char *password) {
     if (!password) return 0;
     // Password max 6 chars
     unsigned int pin = 0;
@@ -27,12 +27,12 @@ int ras_password_to_pin(const char *password) {
     return (int)pin;
 }
 
-void ras_auth_init(ras_auth_state *state) {
+void sfs_auth_init(sfs_auth_state *state) {
     if (!state) return;
     memset(state, 0, sizeof(*state));
 }
 
-void ras_auth_add(ras_auth_state *state, const char *client_ip, const char *share_name) {
+void sfs_auth_add(sfs_auth_state *state, const char *client_ip, const char *share_name) {
     if (!state || !client_ip || !share_name) return;
     
     // Check if already exists and update expiry
@@ -45,16 +45,16 @@ void ras_auth_add(ras_auth_state *state, const char *client_ip, const char *shar
     }
     
     // Add new entry
-    if (state->count < RAS_MAX_AUTH_CLIENTS) {
-        ras_auth_entry *e = &state->entries[state->count++];
+    if (state->count < SFS_MAX_AUTH_CLIENTS) {
+        sfs_auth_entry *e = &state->entries[state->count++];
         strncpy(e->client_ip, client_ip, sizeof(e->client_ip) - 1);
         strncpy(e->share_name, share_name, sizeof(e->share_name) - 1);
         e->expiry = time(NULL) + 600;
-        ras_log(RAS_LOG_INFO, "Auth: client %s authenticated for share '%s'", client_ip, share_name);
+        sfs_log(SFS_LOG_INFO, "Auth: client %s authenticated for share '%s'", client_ip, share_name);
     }
 }
 
-int ras_auth_check(ras_auth_state *state, const char *client_ip, const char *share_name) {
+int sfs_auth_check(sfs_auth_state *state, const char *client_ip, const char *share_name) {
     if (!state || !client_ip || !share_name) return 0;
     
     time_t now = time(NULL);
@@ -97,35 +97,35 @@ static void write_u32(unsigned char *p, unsigned int v) {
 #define ATTR_SUBDIR     0x08
 #define ATTR_CDROM      0x10
 
-int ras_accessplus_handle(const unsigned char *buf, size_t len,
+int sfs_accessplus_handle(const unsigned char *buf, size_t len,
                           const char *addr, unsigned short port,
-                          const ras_config *cfg, ras_net *net,
-                          ras_auth_state *auth) {
+                          const sfs_config *cfg, sfs_net *net,
+                          sfs_auth_state *auth) {
     if (!buf || len < 8 || !net || !cfg) return -1;
 
     unsigned int msg_type = read_u32(buf);
     unsigned int share_type = read_u32(buf + 4);
 
-    ras_log(RAS_LOG_PROTOCOL, "Access+ type=%08x share_type=%08x from %s:%u",
+    sfs_log(SFS_LOG_PROTOCOL, "Access+ type=%08x share_type=%08x from %s:%u",
             msg_type, share_type, addr ? addr : "?", port);
 
     // Handle Freeway-style authentication request
     // Client sends: 0x00010001, 0x00010001, key
     if (msg_type == FW_DISCS_STARTUP && share_type == 0x00010001 && len >= 12) {
         unsigned int client_key = read_u32(buf + 8);
-        ras_log(RAS_LOG_DEBUG, "Access+ share request with key=%08x", client_key);
+        sfs_log(SFS_LOG_DEBUG, "Access+ share request with key=%08x", client_key);
 
         // Find a protected share matching this key
         for (size_t i = 0; i < cfg->share_count; ++i) {
-            const ras_share_config *s = &cfg->shares[i];
+            const sfs_share_config *s = &cfg->shares[i];
             if (!s->name || !s->password) continue;
-            if (!(s->attributes & RAS_ATTR_PROTECTED)) continue;
+            if (!(s->attributes & SFS_ATTR_PROTECTED)) continue;
 
-            int share_key = ras_password_to_pin(s->password);
+            int share_key = sfs_password_to_pin(s->password);
             if ((unsigned int)share_key == client_key) {
                 // Record this client as authenticated for this share
                 if (auth) {
-                    ras_auth_add(auth, addr, s->name);
+                    sfs_auth_add(auth, addr, s->name);
                 }
                 
                 // Send the protected share info
@@ -143,8 +143,8 @@ int ras_accessplus_handle(const unsigned char *buf, size_t len,
                 reply[16 + name_len] = (unsigned char)s->attributes;
                 reply[16 + name_len + 1] = '\0';
 
-                ras_log(RAS_LOG_DEBUG, "Access+ sending protected share '%s'", s->name);
-                ras_net_sendto(net->auth, reply, pkt_len, addr, port);
+                sfs_log(SFS_LOG_DEBUG, "Access+ sending protected share '%s'", s->name);
+                sfs_net_sendto(net->auth, reply, pkt_len, addr, port);
             }
         }
         return 0;
@@ -153,10 +153,10 @@ int ras_accessplus_handle(const unsigned char *buf, size_t len,
     // Handle general Freeway messages - just log and ignore for now
     if ((msg_type >> 16) == 0x0001) {
         unsigned int minor = msg_type & 0xFFFF;
-        ras_log(RAS_LOG_DEBUG, "Access+ Freeway disc message minor=%u", minor);
+        sfs_log(SFS_LOG_DEBUG, "Access+ Freeway disc message minor=%u", minor);
         return 0;
     }
 
-    ras_log(RAS_LOG_DEBUG, "Unknown Access+ message type %08x", msg_type);
+    sfs_log(SFS_LOG_DEBUG, "Unknown Access+ message type %08x", msg_type);
     return 0;
 }

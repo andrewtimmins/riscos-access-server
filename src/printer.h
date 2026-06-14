@@ -1,14 +1,14 @@
-// RISC OS Access/ShareFS Server - Printer Support
+// ShareFS Server - Printer Support
 // Author: Andrew Timmins
 // License: GPL-3.0-only
 
-#ifndef RAS_PRINTER_H
-#define RAS_PRINTER_H
+#ifndef SFS_PRINTER_H
+#define SFS_PRINTER_H
 
 #include "config.h"
 
-int ras_printers_setup(const ras_config *cfg);
-void ras_printers_poll(const ras_config *cfg);
-void ras_printers_shutdown(void);
+int sfs_printers_setup(const sfs_config *cfg);
+void sfs_printers_poll(const sfs_config *cfg);
+void sfs_printers_shutdown(void);
 
 #endif

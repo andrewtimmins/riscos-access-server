@@ -1,4 +1,4 @@
-// RISC OS Access/ShareFS Server - Printer Support
+// ShareFS Server - Printer Support
 // Author: Andrew Timmins
 // License: GPL-3.0-only
 
@@ -33,7 +33,7 @@ static int copy_file(const char *src, const char *dst) {
 static int ensure_dir(const char *path) {
     if (!path) return -1;
     // Attempt create; ignore if exists.
-    if (ras_mkdir(path) == 0) return 0;
+    if (sfs_mkdir(path) == 0) return 0;
     return 0; // best effort; no stat check to keep minimal dependencies
 }
 
@@ -85,7 +85,7 @@ static int replace_cmd(const char *tmpl, const char *filepath, char *out, size_t
     return 0;
 }
 
-static int process_spool(const ras_printer_config *p) {
+static int process_spool(const sfs_printer_config *p) {
     char spool_dir[512];
     snprintf(spool_dir, sizeof(spool_dir), "%s/RemSpool", p->path);
     DIR *d = opendir(spool_dir);
@@ -105,14 +105,14 @@ static int process_spool(const ras_printer_config *p) {
 
         char cmd[1024];
         if (replace_cmd(p->command, queue, cmd, sizeof(cmd)) != 0) {
-            ras_log(RAS_LOG_ERROR, "printer %s command too long", p->name);
+            sfs_log(SFS_LOG_ERROR, "printer %s command too long", p->name);
             remove(queue);
             continue;
         }
 
         int rc = system(cmd);
         if (rc != 0) {
-            ras_log(RAS_LOG_ERROR, "printer %s command failed rc=%d", p->name, rc);
+            sfs_log(SFS_LOG_ERROR, "printer %s command failed rc=%d", p->name, rc);
         }
 
         remove(queue);
@@ -125,7 +125,7 @@ static int process_spool(const ras_printer_config *p) {
 static time_t *g_next_poll = NULL;
 static size_t g_poll_count = 0;
 
-void ras_printers_poll(const ras_config *cfg) {
+void sfs_printers_poll(const sfs_config *cfg) {
     if (!cfg) return;
     if (!g_next_poll) {
         g_poll_count = cfg->printer_count;
@@ -140,7 +140,7 @@ void ras_printers_poll(const ras_config *cfg) {
 
     time_t now = time(NULL);
     for (size_t i = 0; i < cfg->printer_count; ++i) {
-        const ras_printer_config *p = &cfg->printers[i];
+        const sfs_printer_config *p = &cfg->printers[i];
         int interval = p->poll_interval > 0 ? p->poll_interval : 5;
         if (g_next_poll && now >= g_next_poll[i]) {
             process_spool(p);
@@ -149,18 +149,18 @@ void ras_printers_poll(const ras_config *cfg) {
     }
 }
 
-void ras_printers_shutdown(void) {
+void sfs_printers_shutdown(void) {
     free(g_next_poll);
     g_next_poll = NULL;
     g_poll_count = 0;
 }
 
-int ras_printers_setup(const ras_config *cfg) {
+int sfs_printers_setup(const sfs_config *cfg) {
     if (!cfg) return -1;
     for (size_t i = 0; i < cfg->printer_count; ++i) {
-        const ras_printer_config *p = &cfg->printers[i];
+        const sfs_printer_config *p = &cfg->printers[i];
         if (!p->name || !p->path || !p->definition) {
-            ras_log(RAS_LOG_ERROR, "printer missing fields");
+            sfs_log(SFS_LOG_ERROR, "printer missing fields");
             continue;
         }
 
@@ -169,7 +169,7 @@ int ras_printers_setup(const ras_config *cfg) {
         char defn_path[512];
         snprintf(defn_path, sizeof(defn_path), "%s/%s.fc6", p->path, p->name);
         if (copy_file(p->definition, defn_path) != 0) {
-            ras_log(RAS_LOG_ERROR, "failed to copy printer definition for %s", p->name);
+            sfs_log(SFS_LOG_ERROR, "failed to copy printer definition for %s", p->name);
         }
 
         char queue_path[512];

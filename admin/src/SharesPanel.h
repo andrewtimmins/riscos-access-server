@@ -1,4 +1,4 @@
-// RISC OS Access Server - Admin GUI Shares Panel
+// ShareFS Server - Admin GUI Shares Panel
 
 #ifndef SHARESPANEL_H
 #define SHARESPANEL_H

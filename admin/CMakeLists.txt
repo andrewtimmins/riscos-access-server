@@ -57,32 +57,37 @@ set(ADMIN_SOURCES
     src/ControlPanel.cpp
 )
 
-add_executable(access-admin WIN32 ${ADMIN_SOURCES})
+add_executable(sharefs-admin WIN32 ${ADMIN_SOURCES})
 
-target_include_directories(access-admin PRIVATE
+target_compile_definitions(sharefs-admin PRIVATE
+    "SHAREFS_VERSION=\"${PROJECT_VERSION}\""
+    "SHAREFS_HOMEPAGE=\"https://github.com/andrewtimmins/riscos-access-server\""
+)
+
+target_include_directories(sharefs-admin PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
 if(CMAKE_CROSSCOMPILING AND WIN32)
     # Apply wx-config flags directly for cross-compile
     separate_arguments(WX_CXX_FLAGS_LIST UNIX_COMMAND "${WX_CXX_FLAGS}")
-    target_compile_options(access-admin PRIVATE ${WX_CXX_FLAGS_LIST})
+    target_compile_options(sharefs-admin PRIVATE ${WX_CXX_FLAGS_LIST})
     
     # Link flags need special handling
-    target_link_libraries(access-admin PRIVATE ${WX_LINK_FLAGS})
+    target_link_libraries(sharefs-admin PRIVATE ${WX_LINK_FLAGS})
     
     # Windows libraries for service status checks and network enumeration
-    target_link_libraries(access-admin PRIVATE advapi32 iphlpapi)
+    target_link_libraries(sharefs-admin PRIVATE advapi32 iphlpapi)
     
     # Static linking of C/C++ runtime
-    target_link_options(access-admin PRIVATE -static -static-libgcc -static-libstdc++)
+    target_link_options(sharefs-admin PRIVATE -static -static-libgcc -static-libstdc++)
 else()
-    target_link_libraries(access-admin PRIVATE ${wxWidgets_LIBRARIES})
+    target_link_libraries(sharefs-admin PRIVATE ${wxWidgets_LIBRARIES})
     
     # Link with Windows libraries for service status checks and network enumeration
     if(WIN32)
-        target_link_libraries(access-admin PRIVATE advapi32 iphlpapi)
+        target_link_libraries(sharefs-admin PRIVATE advapi32 iphlpapi)
     endif()
 endif()
 
-install(TARGETS access-admin RUNTIME DESTINATION bin)
+install(TARGETS sharefs-admin RUNTIME DESTINATION bin)

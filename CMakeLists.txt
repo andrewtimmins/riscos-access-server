@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(riscos-access-server VERSION 0.1.1 LANGUAGES C CXX)
+project(sharefs-server VERSION 0.1.1 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -10,10 +10,10 @@ if(NOT WIN32)
     add_compile_definitions(_POSIX_C_SOURCE=200809L)
 endif()
 
-option(RAS_ENABLE_WARNINGS "Enable extra warnings" ON)
-option(RAS_BUILD_ADMIN "Build wxWidgets admin GUI" ON)
+option(SFS_ENABLE_WARNINGS "Enable extra warnings" ON)
+option(SFS_BUILD_ADMIN "Build wxWidgets admin GUI" ON)
 
-if(RAS_ENABLE_WARNINGS)
+if(SFS_ENABLE_WARNINGS)
     if(MSVC)
         add_compile_options(/W4 /permissive-)
     else()
@@ -27,23 +27,23 @@ include(CTest)
 add_subdirectory(tests)
 
 # Admin GUI (wxWidgets required)
-if(RAS_BUILD_ADMIN)
+if(SFS_BUILD_ADMIN)
     add_subdirectory(admin)
 endif()
 
 # Install sample config
-install(FILES access.conf.sample DESTINATION share/riscos-access-server)
+install(FILES sharefs.conf.sample DESTINATION share/sharefs)
 
 # Install systemd service file (Linux only)
 if(NOT WIN32)
-    install(FILES debian/access.service DESTINATION lib/systemd/system)
+    install(FILES debian/sharefs.service DESTINATION lib/systemd/system)
 endif()
 
 # CPack configuration for Debian packages
-set(CPACK_PACKAGE_NAME "riscos-access-server")
+set(CPACK_PACKAGE_NAME "sharefs-server")
 set(CPACK_PACKAGE_VENDOR "Andrew Timmins")
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "RISC OS Access/ShareFS Server")
-set(CPACK_PACKAGE_DESCRIPTION "A server that allows modern computers to share files with RISC OS machines using the native ShareFS protocol. Includes file operations, directory browsing, Freeway broadcasts, and Access+ authentication.")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "ShareFS Server")
+set(CPACK_PACKAGE_DESCRIPTION "ShareFS Server allows modern computers to share files with RISC OS machines using the native ShareFS protocol. Includes file operations, directory browsing, Freeway broadcasts, and Access+ authentication.")
 set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
 set(CPACK_PACKAGE_VERSION_MAJOR ${PROJECT_VERSION_MAJOR})
 set(CPACK_PACKAGE_VERSION_MINOR ${PROJECT_VERSION_MINOR})
@@ -58,7 +58,7 @@ set(CPACK_DEBIAN_PACKAGE_SECTION "net")
 set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
 
 # Dependencies - systemd for service management
-if(RAS_BUILD_ADMIN)
+if(SFS_BUILD_ADMIN)
     set(CPACK_DEBIAN_PACKAGE_DEPENDS "systemd, libwxgtk3.2-1")
 else()
     set(CPACK_DEBIAN_PACKAGE_DEPENDS "systemd")

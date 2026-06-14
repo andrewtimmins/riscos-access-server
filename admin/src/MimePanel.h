@@ -1,4 +1,4 @@
-// RISC OS Access Server - Admin GUI MIME Panel
+// ShareFS Server - Admin GUI MIME Panel
 
 #ifndef MIMEPANEL_H
 #define MIMEPANEL_H

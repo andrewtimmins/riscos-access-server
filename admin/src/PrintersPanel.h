@@ -1,4 +1,4 @@
-// RISC OS Access Server - Admin GUI Printers Panel
+// ShareFS Server - Admin GUI Printers Panel
 
 #ifndef PRINTERSPANEL_H
 #define PRINTERSPANEL_H

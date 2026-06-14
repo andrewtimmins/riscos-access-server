@@ -1,12 +1,12 @@
-# RISC OS Access/ShareFS Server - Windows Installer Script
+# ShareFS Server - Windows Installer Script
 # Built with NSIS (Nullsoft Scriptable Install System)
 
-!define PRODUCT_NAME "RISC OS Access/ShareFS Server"
+!define PRODUCT_NAME "ShareFS Server"
 !define PRODUCT_VERSION "0.1.1"
 !define PRODUCT_PUBLISHER "Andrew Timmins"
 !define PRODUCT_WEB_SITE "https://github.com/andrewtimmins/riscos-access-server"
 !define PRODUCT_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
-!define SERVICE_NAME "AccessServer"
+!define SERVICE_NAME "ShareFSServer"
 
 # MUI Settings
 !include "MUI2.nsh"
@@ -16,9 +16,9 @@
 
 # Installer settings
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
-OutFile "riscos-access-server_${PRODUCT_VERSION}-setup.exe"
-InstallDir "C:\AccessServer"
-InstallDirRegKey HKLM "Software\AccessServer" "InstallDir"
+OutFile "sharefs-server_${PRODUCT_VERSION}-setup.exe"
+InstallDir "C:\ShareFS"
+InstallDirRegKey HKLM "Software\ShareFS" "InstallDir"
 RequestExecutionLevel admin
 ShowInstDetails show
 ShowUnInstDetails show
@@ -58,7 +58,7 @@ VIProductVersion "0.1.1.0"
 VIAddVersionKey "ProductName" "${PRODUCT_NAME}"
 VIAddVersionKey "ProductVersion" "${PRODUCT_VERSION}"
 VIAddVersionKey "CompanyName" "${PRODUCT_PUBLISHER}"
-VIAddVersionKey "FileDescription" "RISC OS Access/ShareFS Server Installer"
+VIAddVersionKey "FileDescription" "ShareFS Server Installer"
 VIAddVersionKey "FileVersion" "${PRODUCT_VERSION}"
 
 # Installer sections
@@ -72,9 +72,9 @@ Section "Core Files" SecCore
   SetOutPath "$INSTDIR"
   
   # Install executables
-  File "releases\windows\access.exe"
-  File "releases\windows\access-service.exe"
-  File "releases\windows\access-admin.exe"
+  File "releases\windows\sharefs-server.exe"
+  File "releases\windows\sharefs-service.exe"
+  File "releases\windows\sharefs-admin.exe"
   
   # Install documentation (but not config - that goes to ProgramData)
   SetOutPath "$INSTDIR"
@@ -92,13 +92,13 @@ Section "Core Files" SecCore
   SetOutPath "$INSTDIR"
 
   # Copy config to install dir if not exists (preserve existing config on upgrade)
-  IfFileExists "$INSTDIR\access.conf" PreserveConfig InstallConfig
+  IfFileExists "$INSTDIR\sharefs.conf" PreserveSharefs InstallConfig
   InstallConfig:
-    File /oname=access.conf "releases\windows\access.conf"
-    DetailPrint "Installed default configuration to $INSTDIR\access.conf"
+    File /oname=sharefs.conf "releases\windows\sharefs.conf"
+    DetailPrint "Installed default configuration to $INSTDIR\sharefs.conf"
     Goto ConfigDone
-  PreserveConfig:
-    DetailPrint "Preserving existing configuration at $INSTDIR\access.conf"
+  PreserveSharefs:
+    DetailPrint "Preserving existing configuration at $INSTDIR\sharefs.conf"
   ConfigDone:
 
   # Set share permissions for Public share
@@ -114,7 +114,7 @@ Section "Core Files" SecCore
   # Registry entries for Add/Remove Programs
   WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "DisplayName" "${PRODUCT_NAME}"
   WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "UninstallString" "$INSTDIR\Uninstall.exe"
-  WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "DisplayIcon" "$INSTDIR\access-admin.exe"
+  WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "DisplayIcon" "$INSTDIR\sharefs-admin.exe"
   WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "DisplayVersion" "${PRODUCT_VERSION}"
   WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "Publisher" "${PRODUCT_PUBLISHER}"
   WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "URLInfoAbout" "${PRODUCT_WEB_SITE}"
@@ -130,7 +130,7 @@ SectionEnd
 
 Section "Start Menu Shortcuts" SecShortcuts
   CreateDirectory "$SMPROGRAMS\${PRODUCT_NAME}"
-  CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\Admin GUI.lnk" "$INSTDIR\access-admin.exe"
+  CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\Admin GUI.lnk" "$INSTDIR\sharefs-admin.exe"
   CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
   CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\README.lnk" "$INSTDIR\README.txt"
 SectionEnd
@@ -139,7 +139,7 @@ Section "Install Windows Service" SecService
   DetailPrint "Installing Windows service..."
   
   # Install the service
-  nsExec::ExecToLog '"$INSTDIR\access-service.exe" install'
+  nsExec::ExecToLog '"$INSTDIR\sharefs-service.exe" install'
   Pop $0
   
   ${If} $0 == 0
@@ -153,9 +153,9 @@ Section "Configure Firewall" SecFirewall
   DetailPrint "Configuring Windows Firewall..."
   
   # Add firewall rules for the server
-  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="RISC OS Access Server - UDP 32770" dir=in action=allow protocol=UDP localport=32770'
-  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="RISC OS Access Server - UDP 32771" dir=in action=allow protocol=UDP localport=32771'
-  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="RISC OS Access Server - UDP 49171" dir=in action=allow protocol=UDP localport=49171'
+  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="ShareFS Server - UDP 32770" dir=in action=allow protocol=UDP localport=32770'
+  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="ShareFS Server - UDP 32771" dir=in action=allow protocol=UDP localport=32771'
+  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="ShareFS Server - UDP 49171" dir=in action=allow protocol=UDP localport=49171'
   
   DetailPrint "Firewall rules added"
 SectionEnd
@@ -164,7 +164,7 @@ Section "Start Service" SecStart
   DetailPrint "Starting Windows service..."
   
   # Start the service
-  nsExec::ExecToLog '"$INSTDIR\access-service.exe" start'
+  nsExec::ExecToLog '"$INSTDIR\sharefs-service.exe" start'
   Pop $0
   
   ${If} $0 == 0
@@ -188,26 +188,26 @@ SectionEnd
 Section "Uninstall"
   # Stop and remove service
   DetailPrint "Stopping Windows service..."
-  nsExec::ExecToLog '"$INSTDIR\access-service.exe" stop'
+  nsExec::ExecToLog '"$INSTDIR\sharefs-service.exe" stop'
   Sleep 2000
   
   DetailPrint "Removing Windows service..."
-  nsExec::ExecToLog '"$INSTDIR\access-service.exe" uninstall'
+  nsExec::ExecToLog '"$INSTDIR\sharefs-service.exe" uninstall'
   
   # Remove firewall rules
   DetailPrint "Removing firewall rules..."
-  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="RISC OS Access Server - UDP 32770"'
-  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="RISC OS Access Server - UDP 32771"'
-  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="RISC OS Access Server - UDP 49171"'
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="ShareFS Server - UDP 32770"'
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="ShareFS Server - UDP 32771"'
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="ShareFS Server - UDP 49171"'
   
   # Remove Start Menu shortcuts
   Delete "$SMPROGRAMS\${PRODUCT_NAME}\*.*"
   RMDir "$SMPROGRAMS\${PRODUCT_NAME}"
   
   # Remove installed files
-  Delete "$INSTDIR\access.exe"
-  Delete "$INSTDIR\access-service.exe"
-  Delete "$INSTDIR\access-admin.exe"
+  Delete "$INSTDIR\sharefs-server.exe"
+  Delete "$INSTDIR\sharefs-service.exe"
+  Delete "$INSTDIR\sharefs-admin.exe"
   Delete "$INSTDIR\README.txt"
   Delete "$INSTDIR\LICENSE"
   Delete "$INSTDIR\configure-firewall-windows.bat"
@@ -230,7 +230,7 @@ SectionEnd
 
 # Launch admin GUI function
 Function LaunchAdminGUI
-  Exec "$INSTDIR\access-admin.exe"
+  Exec "$INSTDIR\sharefs-admin.exe"
 FunctionEnd
 
 # Installer init function

@@ -1,4 +1,4 @@
-// RISC OS Access Server - Admin GUI Main Frame Header
+// ShareFS Server - Admin GUI Main Frame Header
 
 #ifndef MAINFRAME_H
 #define MAINFRAME_H
@@ -23,7 +23,7 @@ public:
     
     void SetModified(bool modified);
     bool IsModified() const { return m_modified; }
-    RasConfig& GetConfig() { return m_config; }
+    SfsConfig& GetConfig() { return m_config; }
     const std::string& GetConfigPath() const { return m_configPath; }
     
     // Access to control panel for restart
@@ -52,7 +52,7 @@ private:
     wxButton* m_applyBtn;
     wxButton* m_revertBtn;
     
-    RasConfig m_config;
+    SfsConfig m_config;
     std::string m_configPath;
     bool m_modified = false;
     
