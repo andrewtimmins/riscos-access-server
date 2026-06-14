@@ -496,6 +496,12 @@ create_windows_installer() {
         return
     fi
 
+    if [ ! -f "$WINDOWS_RELEASE/sharefs-admin.exe" ]; then
+        echo ""
+        echo "Note: Skipping NSIS installer (admin GUI not built)."
+        return
+    fi
+
     echo ""
     echo "Creating Windows NSIS installer (x64)..."
 
@@ -511,10 +517,13 @@ create_windows_installer() {
     local installer="sharefs-server_${VERSION}-setup.exe"
     local nsis_release_dir
     nsis_release_dir=$(echo "$WINDOWS_RELEASE" | tr '/' '\\')
-    makensis -NOCD \
+    if ! makensis -NOCD \
         -DPRODUCT_VERSION="${VERSION}" \
         -DWINDOWS_RELEASE_DIR="${nsis_release_dir}" \
-        installer.nsi > /dev/null
+        installer.nsi > /dev/null; then
+        echo "Warning: NSIS installer creation failed"
+        return
+    fi
 
     if [ -f "$installer" ]; then
         mv "$installer" "$WINDOWS_RELEASE/"

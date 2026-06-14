@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(sharefs-server VERSION 0.1.1 LANGUAGES C CXX)
+project(sharefs-server VERSION 0.1.1 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -28,6 +28,9 @@ add_subdirectory(tests)
 
 # Admin GUI (wxWidgets required)
 if(SFS_BUILD_ADMIN)
+    enable_language(CXX)
+    set(CMAKE_CXX_STANDARD 17)
+    set(CMAKE_CXX_STANDARD_REQUIRED ON)
     add_subdirectory(admin)
 endif()
 

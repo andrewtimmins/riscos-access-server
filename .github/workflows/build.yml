@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   linux-amd64:
     runs-on: ubuntu-latest
@@ -70,7 +73,7 @@ jobs:
       - name: Install cross-compiler
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake gcc-aarch64-linux-gnu
+          sudo apt-get install -y build-essential cmake gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
       - name: Cross-compile server (arm64)
         run: ./build.sh --cross-arm64

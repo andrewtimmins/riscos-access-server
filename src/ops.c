@@ -26,6 +26,12 @@
 #endif
 
 #ifdef _WIN32
+#define sfs_lstat(path, st) stat((path), (st))
+#else
+#define sfs_lstat(path, st) lstat((path), (st))
+#endif
+
+#ifdef _WIN32
 static int map_winerr_to_errno(DWORD err) {
   switch (err) {
   case ERROR_FILE_NOT_FOUND:
@@ -616,7 +622,7 @@ static void populate_dir_listing(const char *host_path, const sfs_config *cfg,
     snprintf(full_path, sizeof(full_path), "%s/%s", host_path, ent->d_name);
 
     struct stat st;
-    if (lstat(full_path, &st) != 0)
+    if (sfs_lstat(full_path, &st) != 0)
       continue;
 
     int filetype = S_ISDIR(st.st_mode)
