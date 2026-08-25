@@ -8,3 +8,34 @@ add_executable(test_names
 target_include_directories(test_names PRIVATE ../src)
 
 add_test(NAME test_names COMMAND test_names)
+
+# Protocol-level access control tests. These start the real server and drive it
+# over UDP, because the properties they check - that a protected share needs
+# authentication, and that a handle belongs to the client that opened it -
+# cannot be reached from a unit test.
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_FOUND)
+    # Fixture tree the test config points at.
+    file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/Public)
+    file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/fixtures/Secret)
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/fixtures/Public/ReadMe
+         "hello riscos\n")
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/fixtures/Secret/Confidential
+         "top secret\n")
+
+    configure_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/security_test.conf.in
+        ${CMAKE_CURRENT_BINARY_DIR}/security_test.conf
+        @ONLY
+    )
+    add_test(NAME protocol_security
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/protocol_security_test.py
+                ${CMAKE_CURRENT_BINARY_DIR}/security_test.conf
+                $<TARGET_FILE:sharefs-server>
+    )
+    # Binds the real UDP ports, so it must not run alongside another instance.
+    set_tests_properties(protocol_security PROPERTIES RUN_SERIAL TRUE)
+else()
+    message(STATUS "Python3 not found - skipping protocol security tests")
+endif()

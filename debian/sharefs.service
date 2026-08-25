@@ -10,11 +10,34 @@ ExecStart=/usr/bin/sharefs-server
 Restart=on-failure
 RestartSec=5
 
-# Security hardening
+# Security hardening.
+#
+# ProtectSystem=full keeps /usr, /boot and /etc read-only while leaving the
+# places a file server actually serves from writable. It was previously
+# "strict", which makes the entire hierarchy read-only bar ReadWritePaths, so
+# the server could not write to any share at all - including the
+# /srv/sharefs/Public that its own postinst creates.
 NoNewPrivileges=true
-ProtectSystem=strict
+ProtectSystem=full
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+# The log directory, and the default share root created at install time.
+#
+# If you share directories elsewhere, add them here, for example:
+#   sudo systemctl edit sharefs
+#   [Service]
+#   ReadWritePaths=/mnt/archive
+ReadWritePaths=/var/log/sharefs /srv/sharefs
+
+# Home directories are not exposed by default. If you share from /home, drop
+# this with a unit override:
+#   sudo systemctl edit sharefs
+#   [Service]
+#   ProtectHome=false
 ProtectHome=read-only
-ReadWritePaths=/var/log/sharefs
 
 [Install]
 WantedBy=multi-user.target

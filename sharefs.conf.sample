@@ -3,6 +3,10 @@
 [server]
 # Logging: none, error, info, debug, protocol
 log_level = info
+# Where to write the log. Defaults to /var/log/sharefs/sharefs.log,
+# falling back to a per-user location when that is not writable.
+# log_file = /var/log/sharefs/sharefs.log
+
 
 # Bind to specific IP address (default: all interfaces)
 # bind_ip = 192.168.0.2

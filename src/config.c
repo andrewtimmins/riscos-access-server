@@ -1,6 +1,21 @@
-// ShareFS Server - Configuration
-// Author: Andrew Timmins
-// License: GPL-3.0-only
+/*
+  ShareFS Server - Configuration
+
+  Copyright (C) 2025-2026 Andy Timmins
+
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
 
 #include "config.h"
 
@@ -229,6 +244,9 @@ int sfs_config_load(const char *path, sfs_config *out) {
       if (strcmp(key, "log_level") == 0) {
         free(out->server.log_level);
         out->server.log_level = sfs_strdup(val);
+      } else if (strcmp(key, "log_file") == 0) {
+        free(out->server.log_file);
+        out->server.log_file = sfs_strdup(val);
       } else if (strcmp(key, "bind_ip") == 0) {
         free(out->server.bind_ip);
         out->server.bind_ip = sfs_strdup(val);
@@ -308,6 +326,7 @@ void sfs_config_unload(sfs_config *cfg) {
   free(cfg->mimemap);
 
   free(cfg->server.log_level);
+  free(cfg->server.log_file);
   free(cfg->server.bind_ip);
   memset(cfg, 0, sizeof(*cfg));
 }

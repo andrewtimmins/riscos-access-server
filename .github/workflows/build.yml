@@ -13,6 +13,30 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # Release v0.1.5 shipped assets named 0.1.1 because CMakeLists.txt had not
+  # been bumped (issue #17). Fail the build rather than publish a mislabelled
+  # release again.
+  version-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Project version matches the tag
+        run: |
+          project_version=$(sed -n 's/^project(sharefs-server VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          echo "CMakeLists.txt version: ${project_version}"
+          if [ -z "${project_version}" ]; then
+            echo "::error::Could not read the version from CMakeLists.txt"
+            exit 1
+          fi
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag_version="${GITHUB_REF_NAME#v}"
+            echo "Tag version: ${tag_version}"
+            if [ "${project_version}" != "${tag_version}" ]; then
+              echo "::error::Tag ${GITHUB_REF_NAME} does not match project version ${project_version}. Bump CMakeLists.txt before tagging."
+              exit 1
+            fi
+          fi
+
   linux-amd64:
     runs-on: ubuntu-latest
     steps:
@@ -122,9 +146,139 @@ jobs:
           path: releases/windows/x64/
           if-no-files-found: error
 
+  # macOS is built as two single-architecture slices which are then fused into
+  # one universal binary, because Homebrew ships wxWidgets per-architecture
+  # only. The server itself has no dependencies and could be built universal in
+  # one pass; the admin GUI is what forces the two-slice approach.
+  macos-arm64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          brew update
+          brew install cmake wxwidgets
+          brew list --versions wxwidgets
+
+      - name: Build arm64 slice
+        run: ./build-macos.sh --arch arm64
+
+      - name: Run tests
+        run: ctest --test-dir build-mac-arm64 --output-on-failure
+
+      - name: Upload arm64 slice
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-slice-arm64
+          # The staged tree, not just the binary: it carries the bundled
+          # libraries, which only exist on this runner.
+          path: build-mac-arm64/appstage/
+          if-no-files-found: error
+
+  macos-x86_64:
+    # Free Intel runners are effectively unavailable, so the x86_64 slice is
+    # cross-compiled on an Apple Silicon runner. Apple clang emits x86_64 via
+    # CMAKE_OSX_ARCHITECTURES; what it needs is x86_64 libraries, which come
+    # from a second Homebrew installed under Rosetta into /usr/local.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rosetta 2
+        run: softwareupdate --install-rosetta --agree-to-license
+
+      - name: Install x86_64 Homebrew and dependencies
+        timeout-minutes: 20
+        run: |
+          if [ ! -x /usr/local/bin/brew ]; then
+            script="$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+            NONINTERACTIVE=1 arch -x86_64 /bin/bash -c "$script"
+          fi
+          # Both slices must carry the SAME version of every library: lipo
+          # fuses them into one file, and two upstream releases are not one
+          # library. "brew update" is what holds the two independent Homebrews
+          # to the same formula revision.
+          for attempt in 1 2 3; do
+            arch -x86_64 /usr/local/bin/brew update && break
+            echo "brew update failed (attempt $attempt of 3)"
+            [ "$attempt" = 3 ] && exit 1
+            sleep $((attempt * 15))
+          done
+          arch -x86_64 /usr/local/bin/brew install cmake wxwidgets
+          arch -x86_64 /usr/local/bin/brew list --versions wxwidgets
+
+      - name: Build x86_64 slice
+        run: |
+          # Resolve wx-config and cmake from the x86_64 Homebrew so the slice
+          # links x86_64 libraries.
+          export PATH="/usr/local/bin:$PATH"
+          ./build-macos.sh --arch x86_64
+
+      - name: Upload x86_64 slice
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-slice-x86_64
+          path: build-mac-x86_64/appstage/
+          if-no-files-found: error
+
+  macos-universal:
+    # Fuse the slices and package the release. Installs no dependencies of its
+    # own: everything it needs came from the two slice jobs.
+    needs: [macos-arm64, macos-x86_64]
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download arm64 slice
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-slice-arm64
+          path: build-mac-arm64/appstage
+
+      - name: Download x86_64 slice
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-slice-x86_64
+          path: build-mac-x86_64/appstage
+
+      - name: Restore permissions
+        # Artifact upload does not preserve the executable bit.
+        run: |
+          chmod +x build-mac-*/appstage/sharefs-server
+          chmod +x build-mac-*/appstage/sharefs-admin.app/Contents/MacOS/sharefs-admin
+
+      - name: Fuse into a universal build
+        run: ./build-macos.sh --fuse --zip
+
+      - name: Verify the result is universal and self-contained
+        run: |
+          server=releases/macos/sharefs-server
+          admin=releases/macos/sharefs-admin.app/Contents/MacOS/sharefs-admin
+          lipo -archs "$server"
+          lipo -archs "$admin"
+          lipo -archs "$server" | grep -q x86_64
+          lipo -archs "$server" | grep -q arm64
+          lipo -archs "$admin"  | grep -q x86_64
+          lipo -archs "$admin"  | grep -q arm64
+          # Nothing may point back at a Homebrew prefix that users will not have.
+          if otool -L "$admin" | grep -E '/opt/homebrew|/usr/local'; then
+            echo "::error::The admin app still references Homebrew paths"
+            exit 1
+          fi
+          # The universal server must actually run on this machine.
+          "$server" --help > /dev/null
+
+      - name: Upload macOS universal release
+        uses: actions/upload-artifact@v4
+        with:
+          name: sharefs-macos-universal
+          path: releases/*.zip
+          if-no-files-found: error
+
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [linux-amd64, linux-arm64, windows-x64]
+    needs: [version-check, linux-amd64, linux-arm64, windows-x64, macos-universal]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -147,6 +301,12 @@ jobs:
           name: sharefs-windows-x64
           path: release-assets/windows-x64
 
+      - name: Download macOS universal artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sharefs-macos-universal
+          path: release-assets/macos
+
       - name: Collect release assets
         run: |
           mkdir -p upload
@@ -159,6 +319,7 @@ jobs:
           cp release-assets/linux-amd64/sharefs-admin upload/sharefs-admin-linux-amd64
           cp release-assets/linux-arm64/sharefs-server upload/sharefs-server-linux-arm64
           cp release-assets/linux-arm64/sharefs-admin upload/sharefs-admin-linux-arm64
+          cp release-assets/macos/*.zip upload/
           ls -la upload/
 
       - name: Publish GitHub Release

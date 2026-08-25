@@ -3,6 +3,10 @@
 [server]
 # Logging: none, error, info, debug, protocol
 log_level = info
+# Where to write the log. Defaults to %ProgramData%\ShareFS\sharefs.log,
+# falling back to the folder holding the executable.
+# log_file = C:\ShareFS\sharefs.log
+
 
 # Bind to specific IP address (REQUIRED for WiFi on Windows)
 # Run 'ipconfig' to find your IP address, then uncomment and set:

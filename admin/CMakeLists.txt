@@ -49,15 +49,31 @@ endif()
 set(ADMIN_SOURCES
     src/main.cpp
     src/MainFrame.cpp
+    src/AboutDialog.cpp
     src/ConfigIO.cpp
     src/ServerPanel.cpp
     src/SharesPanel.cpp
     src/PrintersPanel.cpp
     src/MimePanel.cpp
     src/ControlPanel.cpp
+    src/EmbeddedServer.cpp
 )
 
-add_executable(sharefs-admin WIN32 ${ADMIN_SOURCES})
+add_executable(sharefs-admin WIN32 MACOSX_BUNDLE ${ADMIN_SOURCES})
+
+# macOS needs a real .app bundle, otherwise the binary launches as a background
+# process with no Dock entry and cannot be brought to the front.
+if(APPLE)
+    set_target_properties(sharefs-admin PROPERTIES
+        MACOSX_BUNDLE_BUNDLE_NAME "ShareFS Admin"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "uk.co.andytimmins.sharefs-admin"
+        MACOSX_BUNDLE_COPYRIGHT "Copyright (C) Andy Timmins"
+        MACOSX_BUNDLE_EXECUTABLE_NAME "sharefs-admin"
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Info.plist.in"
+    )
+endif()
 
 target_compile_definitions(sharefs-admin PRIVATE
     "SHAREFS_VERSION=\"${PROJECT_VERSION}\""
@@ -67,6 +83,16 @@ target_compile_definitions(sharefs-admin PRIVATE
 target_include_directories(sharefs-admin PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
+
+# The admin runs the server in-process, so it links the same core library that
+# sharefs-server wraps.
+target_link_libraries(sharefs-admin PRIVATE sfs)
+if(WIN32)
+    target_link_libraries(sharefs-admin PRIVATE ws2_32)
+else()
+    find_package(Threads REQUIRED)
+    target_link_libraries(sharefs-admin PRIVATE Threads::Threads)
+endif()
 
 if(CMAKE_CROSSCOMPILING AND WIN32)
     # Apply wx-config flags directly for cross-compile
@@ -90,4 +116,6 @@ else()
     endif()
 endif()
 
-install(TARGETS sharefs-admin RUNTIME DESTINATION bin)
+install(TARGETS sharefs-admin
+    RUNTIME DESTINATION bin
+    BUNDLE  DESTINATION .)

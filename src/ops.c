@@ -1,6 +1,21 @@
-// ShareFS Server - File Operations (full impl)
-// Author: Andrew Timmins
-// License: GPL-3.0-only
+/*
+  ShareFS Server - File Operations (full impl)
+
+  Copyright (C) 2025-2026 Andy Timmins
+
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
 
 #include "ops.h"
 #include "accessplus.h"
@@ -12,6 +27,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <limits.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
@@ -82,11 +98,17 @@ typedef struct {
 
 static pending_write_t pending_writes[MAX_PENDING_WRITES];
 
-static pending_write_t *find_pending_write(const unsigned char *rid) {
+// Matched on the reply id *and* the peer. The reply id is only three bytes,
+// so on its own it let any host on the network join someone else's transfer.
+static pending_write_t *find_pending_write(const unsigned char *rid,
+                                           const char *addr,
+                                           unsigned short port) {
   for (int i = 0; i < MAX_PENDING_WRITES; i++) {
     if (pending_writes[i].active && pending_writes[i].rid[0] == rid[0] &&
         pending_writes[i].rid[1] == rid[1] &&
-        pending_writes[i].rid[2] == rid[2]) {
+        pending_writes[i].rid[2] == rid[2] &&
+        pending_writes[i].port == port && addr &&
+        strcmp(pending_writes[i].addr, addr) == 0) {
       return &pending_writes[i];
     }
   }
@@ -122,12 +144,64 @@ typedef struct {
   time_t started_at;          // When the rename was armed
 } pending_rename_t;
 
-static pending_rename_t pending_rename = {.suffix_type = -1};
+// A single global meant one client renaming a file locked every other client
+// out of renaming anything. Keyed by reply id and peer, like the other
+// pending-transfer tables.
+static void send_err_pkt(sfs_net *net, const unsigned char *rid, int code,
+                         const char *addr, unsigned short port);
 
-static void clear_pending_rename(void) {
-  pending_rename.active = 0;
-  pending_rename.expected_len = 0;
-  pending_rename.suffix_type = -1;
+#define MAX_PENDING_RENAMES 16
+
+static pending_rename_t pending_renames[MAX_PENDING_RENAMES];
+
+static pending_rename_t *find_pending_rename(const unsigned char *rid,
+                                             const char *addr,
+                                             unsigned short port) {
+  for (int i = 0; i < MAX_PENDING_RENAMES; i++) {
+    if (pending_renames[i].active &&
+        memcmp(pending_renames[i].rid, rid, 3) == 0 &&
+        pending_renames[i].port == port && addr &&
+        strcmp(pending_renames[i].addr, addr) == 0) {
+      return &pending_renames[i];
+    }
+  }
+  return NULL;
+}
+
+static pending_rename_t *alloc_pending_rename(void) {
+  for (int i = 0; i < MAX_PENDING_RENAMES; i++) {
+    if (!pending_renames[i].active) {
+      memset(&pending_renames[i], 0, sizeof(pending_renames[i]));
+      pending_renames[i].active = 1;
+      pending_renames[i].suffix_type = -1;
+      return &pending_renames[i];
+    }
+  }
+  return NULL;
+}
+
+static void clear_pending_rename(pending_rename_t *pr) {
+  if (!pr)
+    return;
+  pr->active = 0;
+  pr->expected_len = 0;
+  pr->suffix_type = -1;
+}
+
+// Time out renames whose client never sent the new name.
+static void expire_stale_pending_renames(sfs_net *net) {
+  time_t now = time(NULL);
+  for (int i = 0; i < MAX_PENDING_RENAMES; i++) {
+    pending_rename_t *pr = &pending_renames[i];
+    if (pr->active && now - pr->started_at > 5) {
+      sfs_log(SFS_LOG_INFO,
+              "RRENAME: timeout waiting for D-pkt rid=%02x%02x%02x old='%s'",
+              pr->rid[0], pr->rid[1], pr->rid[2], pr->old_host_path);
+      // EBUSY so legacy clients show a standard error rather than a blank one
+      send_err_pkt(net, pr->rid, EBUSY, pr->addr, pr->port);
+      clear_pending_rename(pr);
+    }
+  }
 }
 
 static int safe_rename_cross(const char *oldp, const char *newp) {
@@ -229,11 +303,16 @@ typedef struct {
 
 static pending_read_t pending_reads[MAX_PENDING_READS];
 
-static pending_read_t *find_pending_read(const unsigned char *rid) {
+// As with writes, the peer forms part of the key.
+static pending_read_t *find_pending_read(const unsigned char *rid,
+                                         const char *addr,
+                                         unsigned short port) {
   for (int i = 0; i < MAX_PENDING_READS; i++) {
     if (pending_reads[i].active && pending_reads[i].rid[0] == rid[0] &&
         pending_reads[i].rid[1] == rid[1] &&
-        pending_reads[i].rid[2] == rid[2]) {
+        pending_reads[i].rid[2] == rid[2] &&
+        pending_reads[i].port == port && addr &&
+        strcmp(pending_reads[i].addr, addr) == 0) {
       return &pending_reads[i];
     }
   }
@@ -292,8 +371,10 @@ static int mkpath(const char *path) {
   memcpy(tmp, path, len + 1);
 
   // Remove trailing slash
-  if (tmp[len - 1] == '/')
+  if (len > 0 && tmp[len - 1] == '/')
     tmp[--len] = '\0';
+  if (len == 0)
+    return -1;
 
   // Create each component
   for (char *p = tmp + 1; *p; p++) {
@@ -380,6 +461,39 @@ static int build_host_path_from_ro(const char *share_path, const char *rest,
   return 0;
 }
 
+// Confirm that a resolved host path really lies inside its share root.
+//
+// sfs_path_is_safe() rejects ".." and absolute paths, but it works on the
+// textual path only, so a symlink planted inside a share still resolved to
+// wherever it pointed. Compare the canonical paths instead. The target may
+// not exist yet (creates), so walk up to the nearest ancestor that does.
+static int path_within_share(const char *share_root, const char *host_path) {
+  char real_root[PATH_MAX];
+  if (!realpath(share_root, real_root))
+    return 0;
+
+  char candidate[1024];
+  if (snprintf(candidate, sizeof(candidate), "%s", host_path) < 0)
+    return 0;
+
+  char real_path[PATH_MAX];
+  while (!realpath(candidate, real_path)) {
+    // Strip the last component and try again; a create targets a path that
+    // does not exist, but its parent must still be inside the share.
+    char *slash = strrchr(candidate, '/');
+    if (!slash || slash == candidate)
+      return 0;
+    *slash = '\0';
+  }
+
+  size_t root_len = strlen(real_root);
+  if (strncmp(real_path, real_root, root_len) != 0)
+    return 0;
+  // Either exactly the root, or a path below it. Guards against a sibling
+  // directory whose name merely starts with the root's name.
+  return real_path[root_len] == '\0' || real_path[root_len] == '/';
+}
+
 static int resolve_path(const sfs_config *cfg, const char *ro_path, char *out,
                         size_t out_sz) {
   if (!cfg || !ro_path || !out || out_sz == 0)
@@ -417,6 +531,12 @@ static int resolve_path(const sfs_config *cfg, const char *ro_path, char *out,
       if (!sfs_path_is_safe(rel)) {
         sfs_log(SFS_LOG_DEBUG, "resolve_path: safety check failed on '%s'",
                 rel);
+        return -1;
+      }
+      if (!path_within_share(cfg->shares[i].path, out)) {
+        sfs_log(SFS_LOG_ERROR,
+                "resolve_path: '%s' escapes share '%s' (symlink?)", out,
+                cfg->shares[i].name ? cfg->shares[i].name : "?");
         return -1;
       }
       return 0;
@@ -824,20 +944,8 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
 
   expire_stale_pending_reads();
 
-  // Timeout pending rename if the client never delivered the D-packet
-  if (pending_rename.active) {
-    time_t now = time(NULL);
-    if (now - pending_rename.started_at > 5) {
-      sfs_log(SFS_LOG_INFO,
-              "RRENAME: timeout waiting for D-pkt rid=%02x%02x%02x old='%s'",
-              pending_rename.rid[0], pending_rename.rid[1],
-              pending_rename.rid[2], pending_rename.old_host_path);
-      // Use EBUSY so legacy clients display a standard error instead of blank
-      send_err_pkt(net, pending_rename.rid, EBUSY, pending_rename.addr,
-                   pending_rename.port);
-      clear_pending_rename();
-    }
-  }
+  // Time out renames whose client never delivered the D-packet
+  expire_stale_pending_renames(net);
 
   // Track client for potential broadcasts
   add_client(addr, port);
@@ -1234,11 +1342,14 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       // Response: 6 x 4 bytes (free_lo, free_hi, largest_lo, largest_hi,
       // total_lo, total_hi)
       sfs_fsinfo fsinfo;
-      // Try to get filesystem info from first share
-      if (cfg->share_count > 0) {
+      memset(&fsinfo, 0, sizeof(fsinfo));
+      // Answer for the share named in the request; only fall back to the
+      // first share when no usable path was given.
+      if (path[0] &&
+          resolve_path(cfg, path, host_path, sizeof(host_path)) == 0) {
+        sfs_get_fsinfo(host_path, &fsinfo);
+      } else if (cfg->share_count > 0) {
         sfs_get_fsinfo(cfg->shares[0].path, &fsinfo);
-      } else {
-        memset(&fsinfo, 0, sizeof(fsinfo));
       }
       unsigned char reply[24];
       write_u32(reply, (uint32_t)(fsinfo.free_bytes & 0xFFFFFFFF));
@@ -1615,19 +1726,15 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         break;
       }
 
-      if (pending_rename.active) {
-        if (memcmp(pending_rename.rid, rid, sizeof(pending_rename.rid)) == 0) {
-          // Duplicate A-pkt for same pending rename; ignore and keep waiting
-          sfs_log(SFS_LOG_INFO,
-                  "RRENAME: duplicate A-pkt rid=%02x%02x%02x old='%s'", rid[0],
-                  rid[1], rid[2], pending_rename.old_host_path);
-          // Re-send request for the new name to prompt the client
-          send_w_pkt(net, rid, 0, pending_rename.expected_len,
-                     pending_rename.addr, pending_rename.port);
-          break;
-        }
-        // Another rename already pending; reject
-        send_err_pkt(net, rid, EBUSY, addr, port);
+      pending_rename_t *existing = find_pending_rename(rid, addr, port);
+      if (existing) {
+        // Duplicate A-pkt for the same pending rename; keep waiting and
+        // re-prompt the client for the new name.
+        sfs_log(SFS_LOG_INFO,
+                "RRENAME: duplicate A-pkt rid=%02x%02x%02x old='%s'", rid[0],
+                rid[1], rid[2], existing->old_host_path);
+        send_w_pkt(net, rid, 0, existing->expected_len, existing->addr,
+                   existing->port);
         break;
       }
 
@@ -1645,18 +1752,21 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       }
       int old_suffix_type = sfs_filetype_from_suffix(actual_old_path);
 
-      pending_rename.active = 1;
-      memcpy(pending_rename.rid, rid, sizeof(pending_rename.rid));
-      pending_rename.expected_len = new_name_len;
-      strncpy(pending_rename.old_host_path, actual_old_path,
-              sizeof(pending_rename.old_host_path) - 1);
-      pending_rename.old_host_path[sizeof(pending_rename.old_host_path) - 1] =
-          '\0';
-      strncpy(pending_rename.addr, addr, sizeof(pending_rename.addr) - 1);
-      pending_rename.addr[sizeof(pending_rename.addr) - 1] = '\0';
-      pending_rename.port = port;
-      pending_rename.suffix_type = old_suffix_type;
-      pending_rename.started_at = time(NULL);
+      pending_rename_t *pr = alloc_pending_rename();
+      if (!pr) {
+        send_err_pkt(net, rid, EBUSY, addr, port);
+        break;
+      }
+      memcpy(pr->rid, rid, sizeof(pr->rid));
+      pr->expected_len = new_name_len;
+      strncpy(pr->old_host_path, actual_old_path,
+              sizeof(pr->old_host_path) - 1);
+      pr->old_host_path[sizeof(pr->old_host_path) - 1] = '\0';
+      strncpy(pr->addr, addr, sizeof(pr->addr) - 1);
+      pr->addr[sizeof(pr->addr) - 1] = '\0';
+      pr->port = port;
+      pr->suffix_type = old_suffix_type;
+      pr->started_at = time(NULL);
 
       sfs_log(SFS_LOG_DEBUG,
               "RRENAME: awaiting D-pkt rid=%02x%02x%02x old='%s' new_len=%u",
@@ -1835,6 +1945,15 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     sfs_log(SFS_LOG_PROTOCOL, "B-cmd code=%u handle=%u extra=%u path='%s'",
             code, handle, extra, path);
 
+    // Path-based B commands need the same authentication as their A-command
+    // counterparts. Without this, ROPENDIR here listed a protected share to
+    // anyone who asked, because the check below lived only in the A branch.
+    const int b_has_path = (code == 0x03);
+    if (b_has_path && path[0] && !check_share_auth(cfg, auth, addr, path)) {
+      send_err_pkt(net, rid, EACCES, addr, port);
+      return 0;
+    }
+
     switch (code) {
     case 0x03: // ROPENDIR
     {
@@ -1846,7 +1965,8 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         // Path is a share name - check if it's a valid share
         int share_idx = -1;
         for (size_t i = 0; i < cfg->share_count; ++i) {
-          if (strcasecmp(cfg->shares[i].name, path) == 0) {
+          if (cfg->shares[i].name &&
+              strcasecmp(cfg->shares[i].name, path) == 0) {
             share_idx = (int)i;
             break;
           }
@@ -1986,13 +2106,10 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       }
       int hid = (int)handle;
 
+      // Bound to the opening client: a handle id alone is not authority.
       sfs_handle *h = NULL;
-      for (size_t i = 0; i < handles->count; ++i) {
-        if (handles->items[i].id == hid) {
-          h = &handles->items[i];
-          break;
-        }
-      }
+      if (sfs_handles_get_for_client(handles, hid, addr, port, &h) != 0)
+        h = NULL;
       if (!h || h->type != SFS_HANDLE_DIR || !h->path) {
         send_err_pkt(net, rid, EBADF, addr, port);
         break;
@@ -2026,13 +2143,10 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     switch (code) {
     case 0x0a: // RCLOSE
     {
+      // Bound to the opening client: a handle id alone is not authority.
       sfs_handle *h = NULL;
-      for (size_t i = 0; i < handles->count; ++i) {
-        if (handles->items[i].id == hid) {
-          h = &handles->items[i];
-          break;
-        }
-      }
+      if (sfs_handles_get_for_client(handles, hid, addr, port, &h) != 0)
+        h = NULL;
       if (!h) {
         send_err_pkt(net, rid, EBADF, addr, port);
         break;
@@ -2056,13 +2170,10 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       sfs_log(SFS_LOG_DEBUG, "A-cmd RREAD: handle=%d offset=%u len=%u", hid,
               off, rlen);
 
+      // Bound to the opening client: a handle id alone is not authority.
       sfs_handle *h = NULL;
-      for (size_t i = 0; i < handles->count; ++i) {
-        if (handles->items[i].id == hid) {
-          h = &handles->items[i];
-          break;
-        }
-      }
+      if (sfs_handles_get_for_client(handles, hid, addr, port, &h) != 0)
+        h = NULL;
       if (!h || h->fd < 0) {
         send_err_pkt(net, rid, EBADF, addr, port);
         break;
@@ -2134,13 +2245,10 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       sfs_log(SFS_LOG_DEBUG, "a-cmd RWRITE: handle=%d offset=%u amount=%u", hid,
               off, amount);
 
+      // Bound to the opening client: a handle id alone is not authority.
       sfs_handle *h = NULL;
-      for (size_t i = 0; i < handles->count; ++i) {
-        if (handles->items[i].id == hid) {
-          h = &handles->items[i];
-          break;
-        }
-      }
+      if (sfs_handles_get_for_client(handles, hid, addr, port, &h) != 0)
+        h = NULL;
       if (!h || h->fd < 0) {
         send_err_pkt(net, rid, EBADF, addr, port);
         break;
@@ -2183,13 +2291,10 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         break;
       }
       unsigned int start = read_u32(buf + 12);
+      // Bound to the opening client: a handle id alone is not authority.
       sfs_handle *h = NULL;
-      for (size_t i = 0; i < handles->count; ++i) {
-        if (handles->items[i].id == hid) {
-          h = &handles->items[i];
-          break;
-        }
-      }
+      if (sfs_handles_get_for_client(handles, hid, addr, port, &h) != 0)
+        h = NULL;
       if (!h || h->type != SFS_HANDLE_DIR || !h->path) {
         send_err_pkt(net, rid, EBADF, addr, port);
         break;
@@ -2206,13 +2311,10 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         break;
       }
       unsigned int ensure_size = read_u32(buf + 12);
+      // Bound to the opening client: a handle id alone is not authority.
       sfs_handle *h = NULL;
-      for (size_t i = 0; i < handles->count; ++i) {
-        if (handles->items[i].id == hid) {
-          h = &handles->items[i];
-          break;
-        }
-      }
+      if (sfs_handles_get_for_client(handles, hid, addr, port, &h) != 0)
+        h = NULL;
       if (!h || h->fd < 0) {
         send_err_pkt(net, rid, EBADF, addr, port);
         break;
@@ -2242,13 +2344,10 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         break;
       }
       unsigned int newlen = read_u32(buf + 12);
+      // Bound to the opening client: a handle id alone is not authority.
       sfs_handle *h = NULL;
-      for (size_t i = 0; i < handles->count; ++i) {
-        if (handles->items[i].id == hid) {
-          h = &handles->items[i];
-          break;
-        }
-      }
+      if (sfs_handles_get_for_client(handles, hid, addr, port, &h) != 0)
+        h = NULL;
       if (!h || h->fd < 0) {
         send_err_pkt(net, rid, EBADF, addr, port);
         break;
@@ -2272,13 +2371,10 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       }
       uint32_t load = read_u32(buf + 12);
       uint32_t exec = read_u32(buf + 16);
+      // Bound to the opening client: a handle id alone is not authority.
       sfs_handle *h = NULL;
-      for (size_t i = 0; i < handles->count; ++i) {
-        if (handles->items[i].id == hid) {
-          h = &handles->items[i];
-          break;
-        }
-      }
+      if (sfs_handles_get_for_client(handles, hid, addr, port, &h) != 0)
+        h = NULL;
       if (!h) {
         send_err_pkt(net, rid, EBADF, addr, port);
         break;
@@ -2297,13 +2393,10 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
 
     case 0x11: // RGETSEQPTR
     {
+      // Bound to the opening client: a handle id alone is not authority.
       sfs_handle *h = NULL;
-      for (size_t i = 0; i < handles->count; ++i) {
-        if (handles->items[i].id == hid) {
-          h = &handles->items[i];
-          break;
-        }
-      }
+      if (sfs_handles_get_for_client(handles, hid, addr, port, &h) != 0)
+        h = NULL;
       if (!h) {
         send_err_pkt(net, rid, EBADF, addr, port);
         break;
@@ -2321,13 +2414,10 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         break;
       }
       uint32_t ptr = read_u32(buf + 12);
+      // Bound to the opening client: a handle id alone is not authority.
       sfs_handle *h = NULL;
-      for (size_t i = 0; i < handles->count; ++i) {
-        if (handles->items[i].id == hid) {
-          h = &handles->items[i];
-          break;
-        }
-      }
+      if (sfs_handles_get_for_client(handles, hid, addr, port, &h) != 0)
+        h = NULL;
       if (!h) {
         send_err_pkt(net, rid, EBADF, addr, port);
         break;
@@ -2347,13 +2437,10 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       }
       unsigned int offset = read_u32(buf + 12);
       unsigned int zero_len = read_u32(buf + 16);
+      // Bound to the opening client: a handle id alone is not authority.
       sfs_handle *h = NULL;
-      for (size_t i = 0; i < handles->count; ++i) {
-        if (handles->items[i].id == hid) {
-          h = &handles->items[i];
-          break;
-        }
-      }
+      if (sfs_handles_get_for_client(handles, hid, addr, port, &h) != 0)
+        h = NULL;
       if (!h || h->fd < 0) {
         send_err_pkt(net, rid, EBADF, addr, port);
         break;
@@ -2469,18 +2556,18 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
 
     // Handle pending RRENAME first (client uses the lowercase 'd' channel
     // for the new name payload). This avoids misclassifying it as a write.
-    if (pending_rename.active &&
-        memcmp(pending_rename.rid, rid, sizeof(pending_rename.rid)) == 0) {
+    pending_rename_t *prn = find_pending_rename(rid, addr, port);
+    if (prn) {
       if (data_len == 0) {
         // Client is waiting; re-request the full name payload
-        send_w_pkt(net, rid, rel_pos, pending_rename.expected_len,
-                   pending_rename.addr, pending_rename.port);
+        send_w_pkt(net, rid, rel_pos, prn->expected_len,
+                   prn->addr, prn->port);
         return 0;
       }
 
       if (rel_pos != 0) {
         send_err_pkt(net, rid, EINVAL, addr, port);
-        clear_pending_rename();
+        clear_pending_rename(prn);
         return 0;
       }
 
@@ -2491,14 +2578,14 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       size_t name_len = data_len;
       if (name_len >= 4 && name_ptr[0] == 0 && name_ptr[1] == 0 &&
           name_ptr[2] == 0 && name_ptr[3] == 0 &&
-          name_len == pending_rename.expected_len) {
+          name_len == prn->expected_len) {
         name_ptr += 4;
         name_len -= 4;
       }
 
       if (name_len == 0) {
         send_err_pkt(net, rid, EINVAL, addr, port);
-        clear_pending_rename();
+        clear_pending_rename(prn);
         return 0;
       }
 
@@ -2514,37 +2601,37 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       if (resolve_path(cfg, new_ro_path, new_host_path,
                       sizeof(new_host_path)) != 0) {
         send_err_pkt(net, rid, ENOENT, addr, port);
-        clear_pending_rename();
+        clear_pending_rename(prn);
         return 0;
       }
 
       // Preserve existing ,xxx suffix when renaming files stored with
       // RISC OS filetype suffixes on disk.
-      if (pending_rename.suffix_type >= 0 &&
+      if (prn->suffix_type >= 0 &&
           sfs_filetype_from_suffix(new_host_path) < 0) {
         char suffixed[1024];
         sfs_append_type_suffix(new_host_path,
-                               (uint32_t)pending_rename.suffix_type,
+                               (uint32_t)prn->suffix_type,
                                suffixed, sizeof(suffixed));
         strncpy(new_host_path, suffixed, sizeof(new_host_path) - 1);
         new_host_path[sizeof(new_host_path) - 1] = '\0';
       }
 
-      if (safe_rename_cross(pending_rename.old_host_path, new_host_path) != 0) {
+      if (safe_rename_cross(prn->old_host_path, new_host_path) != 0) {
         send_err_pkt(net, rid, errno, addr, port);
-        clear_pending_rename();
+        clear_pending_rename(prn);
         return 0;
       }
 
       sfs_log(SFS_LOG_DEBUG, "RRENAME: '%s' -> '%s'",
-              pending_rename.old_host_path, new_host_path);
-      send_r_pkt(net, rid, NULL, 0, pending_rename.addr, pending_rename.port);
-      clear_pending_rename();
+              prn->old_host_path, new_host_path);
+      send_r_pkt(net, rid, NULL, 0, prn->addr, prn->port);
+      clear_pending_rename(prn);
       return 0;
     }
 
     // Find pending write for this reply ID
-    pending_write_t *pw = find_pending_write(rid);
+    pending_write_t *pw = find_pending_write(rid, addr, port);
     if (!pw) {
       sfs_log(SFS_LOG_DEBUG, "d-pkt: no pending write found for rid");
       return 0;
@@ -2561,8 +2648,9 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         return 0;
       }
       pw->retries++;
-      // Wait a bit to avoid flooding and give client time
-      sfs_sleep_ms(10);
+      // No sleep here: this path is driven by the client's own packets, and
+      // the server is single-threaded, so sleeping stalled every other client
+      // for up to ten seconds.
 
       // Resend 'w' packet to request the expected chunk
       uint32_t expected_rel = pw->current_pos - pw->start_pos;
@@ -2660,20 +2748,20 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
             rid[0], rid[1], rid[2]);
     size_t payload_len = (len > 4) ? (len - 4) : 0;
 
-    if (!pending_rename.active ||
-        memcmp(pending_rename.rid, rid, sizeof(pending_rename.rid)) != 0) {
+    pending_rename_t *prn = find_pending_rename(rid, addr, port);
+    if (!prn) {
       sfs_log(SFS_LOG_INFO, "D-pkt: no pending rename for rid=%02x%02x%02x",
               rid[0], rid[1], rid[2]);
       return 0;
     }
 
-    if (payload_len < pending_rename.expected_len) {
+    if (payload_len < prn->expected_len) {
       send_err_pkt(net, rid, EINVAL, addr, port);
-      clear_pending_rename();
+      clear_pending_rename(prn);
       return 0;
     }
 
-    size_t copy_len = pending_rename.expected_len;
+    size_t copy_len = prn->expected_len;
     if (copy_len >= 512)
       copy_len = 511;
 
@@ -2685,30 +2773,30 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     if (resolve_path(cfg, new_ro_path, new_host_path, sizeof(new_host_path)) !=
         0) {
       send_err_pkt(net, rid, ENOENT, addr, port);
-      clear_pending_rename();
+      clear_pending_rename(prn);
       return 0;
     }
 
-    if (pending_rename.suffix_type >= 0 &&
+    if (prn->suffix_type >= 0 &&
         sfs_filetype_from_suffix(new_host_path) < 0) {
       char suffixed[1024];
       sfs_append_type_suffix(new_host_path,
-                             (uint32_t)pending_rename.suffix_type, suffixed,
+                             (uint32_t)prn->suffix_type, suffixed,
                              sizeof(suffixed));
       strncpy(new_host_path, suffixed, sizeof(new_host_path) - 1);
       new_host_path[sizeof(new_host_path) - 1] = '\0';
     }
 
-    if (safe_rename_cross(pending_rename.old_host_path, new_host_path) != 0) {
+    if (safe_rename_cross(prn->old_host_path, new_host_path) != 0) {
       send_err_pkt(net, rid, errno, addr, port);
-      clear_pending_rename();
+      clear_pending_rename(prn);
       return 0;
     }
 
-    sfs_log(SFS_LOG_DEBUG, "RRENAME: '%s' -> '%s'", pending_rename.old_host_path,
+    sfs_log(SFS_LOG_DEBUG, "RRENAME: '%s' -> '%s'", prn->old_host_path,
             new_host_path);
-    send_r_pkt(net, rid, NULL, 0, pending_rename.addr, pending_rename.port);
-    clear_pending_rename();
+    send_r_pkt(net, rid, NULL, 0, prn->addr, prn->port);
+    clear_pending_rename(prn);
     return 0;
   }
 
@@ -2735,7 +2823,7 @@ int sfs_rpc_handle_r(const unsigned char *buf, size_t len, const char *addr,
   // Low level protocol logging only
   // sfs_log(SFS_LOG_DEBUG, "r-pkt from %s:%u", addr, port);
 
-  pending_read_t *pr = find_pending_read(rid);
+  pending_read_t *pr = find_pending_read(rid, addr, port);
   if (!pr) {
     // Can happen if we resent R or client is delayed
     return 0;

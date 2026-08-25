@@ -1,4 +1,21 @@
-// ShareFS Server - Admin GUI Shares Panel
+/*
+  ShareFS Server - Admin GUI Shares Panel
+
+  Copyright (C) 2025-2026 Andy Timmins
+
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
 
 #include "SharesPanel.h"
 #include "MainFrame.h"
@@ -35,13 +52,17 @@ SharesPanel::SharesPanel(wxWindow *parent, MainFrame *frame)
 
   m_list = new wxListCtrl(this, ID_SHARE_LIST, wxDefaultPosition, wxDefaultSize,
                           wxLC_REPORT | wxLC_SINGLE_SEL);
-  m_list->SetMinSize(wxSize(260, 160));
-  m_list->InsertColumn(0, "Share Name", wxLIST_FORMAT_LEFT, 180);
+  m_list->SetMinSize(wxSize(300, 200));
+  m_list->InsertColumn(0, "Share Name", wxLIST_FORMAT_LEFT, 140);
+  m_list->InsertColumn(1, "Path", wxLIST_FORMAT_LEFT, 220);
+  m_list->InsertColumn(2, "Access", wxLIST_FORMAT_LEFT, 100);
   m_list->Bind(wxEVT_SIZE, [this](wxSizeEvent &e) {
     e.Skip();
-    ui::ResizeListColumns(m_list);
+    ui::ResizeListColumns(m_list, {3, 5, 2});
   });
-  contentSizer->Add(m_list, 0, wxEXPAND | wxRIGHT, 10);
+  // Proportion 2 against the detail pane's 3 so the list grows with the window
+  // instead of being pinned to its minimum width.
+  contentSizer->Add(m_list, 2, wxEXPAND | wxRIGHT, ui::kGroupGap);
 
   // Detail panel
   m_detailPanel = new wxPanel(this);
@@ -76,7 +97,16 @@ SharesPanel::SharesPanel(wxWindow *parent, MainFrame *frame)
   wxButton *browseBtn =
       new wxButton(m_detailPanel, ID_BROWSE_PATH, "Browse...");
   row2->Add(browseBtn, 0, wxLEFT, 5);
-  formSizer->Add(row2, 0, wxEXPAND | wxBOTTOM, 8);
+  formSizer->Add(row2, 0, wxEXPAND);
+
+  // Inline warning shown when the configured path is missing, rather than
+  // letting the server fail quietly at start-up.
+  wxBoxSizer *pathHintRow = new wxBoxSizer(wxHORIZONTAL);
+  pathHintRow->AddSpacer(labelWidth);
+  m_pathHint = new wxStaticText(m_detailPanel, wxID_ANY, "");
+  m_pathHint->Hide();
+  pathHintRow->Add(m_pathHint, 1, wxEXPAND);
+  formSizer->Add(pathHintRow, 0, wxEXPAND | wxBOTTOM, 8);
 
   // Row 3: Password
   wxBoxSizer *row3 = new wxBoxSizer(wxHORIZONTAL);
@@ -135,7 +165,7 @@ SharesPanel::SharesPanel(wxWindow *parent, MainFrame *frame)
   detailSizer->Add(attrBox, 0, wxEXPAND);
   m_detailPanel->SetSizer(detailSizer);
 
-  contentSizer->Add(m_detailPanel, 1, wxEXPAND);
+  contentSizer->Add(m_detailPanel, 3, wxEXPAND);
   mainSizer->Add(contentSizer, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 15);
 
   SetSizer(mainSizer);
@@ -159,10 +189,26 @@ void SharesPanel::RefreshFromConfig() {
   }
 }
 
+// Summarise a share's attribute flags for the list's Access column.
+static wxString AccessSummary(const ShareConfig &share) {
+  wxString mode = (share.attributes & SFS_ATTR_READONLY) ||
+                          (share.attributes & SFS_ATTR_CDROM)
+                      ? "read-only"
+                      : "read/write";
+  if (share.attributes & SFS_ATTR_PROTECTED)
+    mode += ", locked";
+  if (share.attributes & SFS_ATTR_HIDDEN)
+    mode += ", hidden";
+  return mode;
+}
+
 void SharesPanel::RefreshList() {
   m_list->DeleteAllItems();
   for (size_t i = 0; i < m_frame->GetConfig().Shares().size(); ++i) {
-    m_list->InsertItem(i, m_frame->GetConfig().Shares()[i].name);
+    const ShareConfig &share = m_frame->GetConfig().Shares()[i];
+    long idx = m_list->InsertItem(i, share.name);
+    m_list->SetItem(idx, 1, share.path);
+    m_list->SetItem(idx, 2, AccessSummary(share));
   }
 }
 
@@ -188,6 +234,8 @@ void SharesPanel::ShowDetails(int index) {
   m_attrHidden->SetValue(share.attributes & SFS_ATTR_HIDDEN);
   m_attrSubdir->SetValue(share.attributes & SFS_ATTR_SUBDIR);
   m_attrCdrom->SetValue(share.attributes & SFS_ATTR_CDROM);
+
+  UpdateValidation();
 
   m_detailPanel->Show();
   m_detailPanel->Layout(); // Force child panel layout
@@ -222,6 +270,35 @@ void SharesPanel::SaveCurrentDetails() {
 
   // Update list display
   m_list->SetItemText(m_currentIndex, share.name);
+  m_list->SetItem(m_currentIndex, 1, share.path);
+  m_list->SetItem(m_currentIndex, 2, AccessSummary(share));
+
+  UpdateValidation();
+}
+
+void SharesPanel::UpdateValidation() {
+  const wxString path = m_pathCtrl->GetValue();
+  bool bad = false;
+  wxString message;
+
+  if (path.empty()) {
+    bad = true;
+    message = "A share needs a path";
+  } else if (!wxDirExists(path)) {
+    bad = true;
+    message = "This folder does not exist on this machine";
+  }
+
+  ui::SetFieldError(m_pathCtrl, m_pathHint, bad, message);
+
+  // A protected share without a password cannot actually be unlocked.
+  if (!bad && m_attrProtected->GetValue() &&
+      m_passwordCtrl->GetValue().empty()) {
+    ui::SetFieldError(nullptr, m_pathHint, true,
+                      "Protected shares need a password");
+  }
+
+  m_detailPanel->Layout();
 }
 
 void SharesPanel::OnAddShare(wxCommandEvent &event) {
@@ -247,10 +324,7 @@ void SharesPanel::OnRemoveShare(wxCommandEvent &event) {
     return;
 
   const std::string& name = m_frame->GetConfig().Shares()[m_currentIndex].name;
-  int result = wxMessageBox(
-      wxString::Format("Remove share '%s'?", name),
-      "Confirm Remove", wxYES_NO | wxICON_QUESTION, this);
-  if (result != wxYES)
+  if (!ui::Ask(this, "Confirm Remove", wxString::Format("Remove share '%s'?", name)))
     return;
 
   m_frame->GetConfig().Shares().erase(m_frame->GetConfig().Shares().begin() +

@@ -1,6 +1,21 @@
-// ShareFS Server - Network Layer
-// Author: Andrew Timmins
-// License: GPL-3.0-only
+/*
+  ShareFS Server - Network Layer
+
+  Copyright (C) 2025-2026 Andy Timmins
+
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
 
 #include "net.h"
 #include "log.h"
@@ -30,6 +45,15 @@ static sfs_socket open_udp(unsigned short port, const char *bind_addr) {
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&yes, sizeof(yes));
 #else
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+#if defined(SO_REUSEPORT) &&                                                   \
+    (defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) ||      \
+     defined(__OpenBSD__))
+    // BSD-derived stacks require SO_REUSEPORT, not just SO_REUSEADDR, before
+    // two UDP sockets may share a port. Without it the second bind on 32770
+    // fails and the Freeway listener is lost. Linux does not need it here, and
+    // setting it there would needlessly let other processes share the port.
+    setsockopt(s, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
+#endif
 #endif
 
     if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
@@ -94,7 +118,11 @@ ssize_t sfs_net_sendto(sfs_socket s, const void *buf, size_t len, const char *ad
     to.sin_family = AF_INET;
     to.sin_port = htons(port);
     to.sin_addr.s_addr = addr ? inet_addr(addr) : htonl(INADDR_BROADCAST);
+#ifdef _WIN32
     return sendto(s, (const char *)buf, (int)len, 0, (struct sockaddr *)&to, sizeof(to));
+#else
+    return sendto(s, buf, len, 0, (struct sockaddr *)&to, sizeof(to));
+#endif
 }
 
 ssize_t sfs_net_recvfrom(sfs_socket s, void *buf, size_t len, char *addr, size_t addr_len, unsigned short *port) {
@@ -104,7 +132,11 @@ ssize_t sfs_net_recvfrom(sfs_socket s, void *buf, size_t len, char *addr, size_t
 #else
     socklen_t from_len = sizeof(from);
 #endif
+#ifdef _WIN32
     ssize_t n = recvfrom(s, (char *)buf, (int)len, 0, (struct sockaddr *)&from, &from_len);
+#else
+    ssize_t n = recvfrom(s, buf, len, 0, (struct sockaddr *)&from, &from_len);
+#endif
     if (n >= 0 && addr && addr_len > 0) {
         const char *p = inet_ntoa(from.sin_addr);
         if (p) {

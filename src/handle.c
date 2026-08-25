@@ -1,14 +1,47 @@
-// ShareFS Server - Handle Management
-// Author: Andrew Timmins
-// License: GPL-3.0-only
+/*
+  ShareFS Server - Handle Management
+
+  Copyright (C) 2025-2026 Andy Timmins
+
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
 
 #include "handle.h"
 
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
+// rand() is unseeded by default, so every run produced the same sequence of
+// handle tokens. Seed once from the clock and the pid. This is not a security
+// boundary on its own - handles are bound to the client that opened them -
+// but predictable tokens are worth avoiding all the same.
+static void seed_tokens_once(void) {
+    static int seeded = 0;
+    if (seeded)
+        return;
+    seeded = 1;
+#ifdef _WIN32
+    srand((unsigned int)time(NULL));
+#else
+    srand((unsigned int)time(NULL) ^ (unsigned int)getpid());
+#endif
+}
+
 static int make_token(void) {
+    seed_tokens_once();
     return (rand() & 0x7fff) + 1;
 }
 

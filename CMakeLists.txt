@@ -1,12 +1,17 @@
 cmake_minimum_required(VERSION 3.16)
-project(sharefs-server VERSION 0.1.1 LANGUAGES C)
+project(sharefs-server VERSION 0.1.6 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
-# Enable POSIX APIs on Linux
-if(NOT WIN32)
+# Enable POSIX APIs on Unix-like hosts.
+# On Darwin, defining _POSIX_C_SOURCE alone puts the system headers into strict
+# POSIX mode, which hides strcasecmp/strncasecmp from <strings.h>. wxWidgets
+# needs them, so ask for the BSD extensions instead.
+if(APPLE)
+    add_compile_definitions(_DARWIN_C_SOURCE)
+elseif(NOT WIN32)
     add_compile_definitions(_POSIX_C_SOURCE=200809L)
 endif()
 
@@ -38,13 +43,13 @@ endif()
 install(FILES sharefs.conf.sample DESTINATION share/sharefs)
 
 # Install systemd service file (Linux only)
-if(NOT WIN32)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     install(FILES debian/sharefs.service DESTINATION lib/systemd/system)
 endif()
 
 # CPack configuration for Debian packages
 set(CPACK_PACKAGE_NAME "sharefs-server")
-set(CPACK_PACKAGE_VENDOR "Andrew Timmins")
+set(CPACK_PACKAGE_VENDOR "Andy Timmins")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "ShareFS Server")
 set(CPACK_PACKAGE_DESCRIPTION "ShareFS Server allows modern computers to share files with RISC OS machines using the native ShareFS protocol. Includes file operations, directory browsing, Freeway broadcasts, and Access+ authentication.")
 set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
@@ -56,7 +61,7 @@ set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/andrewtimmins/riscos-access-s
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")
 
 # Debian-specific settings
-set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Andrew Timmins")
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Andy Timmins")
 set(CPACK_DEBIAN_PACKAGE_SECTION "net")
 set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
 

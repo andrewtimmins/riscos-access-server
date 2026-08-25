@@ -1,6 +1,21 @@
-// ShareFS Server - Core Server Loop
-// Author: Andrew Timmins
-// License: GPL-3.0-only
+/*
+  ShareFS Server - Core Server Loop
+
+  Copyright (C) 2025-2026 Andy Timmins
+
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
 
 #include "server.h"
 #include "accessplus.h"
@@ -11,6 +26,7 @@
 
 
 #include <errno.h>
+#include <signal.h>
 #include <string.h>
 #include <time.h>
 
@@ -18,6 +34,15 @@
 #include <sys/select.h>
 #endif
 #include <sys/stat.h>
+
+// Set from another thread (or a signal handler) to ask the main loop to exit.
+// sig_atomic_t + volatile is the portable guarantee we need here: the flag is
+// only ever written to a fixed value and read, never incremented.
+static volatile sig_atomic_t g_stop_requested = 0;
+
+void sfs_server_request_stop(void) { g_stop_requested = 1; }
+
+void sfs_server_clear_stop(void) { g_stop_requested = 0; }
 
 // Send RDEADHANDLES broadcast to all clients
 static void broadcast_dead_handles(sfs_handle_table *handles, sfs_net *net) {
@@ -93,8 +118,9 @@ int sfs_server_run(sfs_config *cfg, sfs_net *net, sfs_handle_table *handles) {
   sfs_log(SFS_LOG_INFO, "Server running, %zu shares, %zu printers",
           cfg->share_count, cfg->printer_count);
 
-  // Main loop
-  for (;;) {
+  // Main loop. Exits when a stop is requested; the one-second select timeout
+  // below bounds how long that takes to be noticed.
+  while (!g_stop_requested) {
     fd_set fds;
     FD_ZERO(&fds);
     FD_SET(net->rpc, &fds);
@@ -175,5 +201,6 @@ int sfs_server_run(sfs_config *cfg, sfs_net *net, sfs_handle_table *handles) {
     sfs_printers_poll(cfg);
   }
 
-  return 0; // unreachable for now
+  sfs_log(SFS_LOG_INFO, "Server stopping");
+  return 0;
 }

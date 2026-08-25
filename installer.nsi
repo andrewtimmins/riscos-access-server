@@ -8,7 +8,7 @@
 !ifndef WINDOWS_RELEASE_DIR
 !define WINDOWS_RELEASE_DIR "releases\windows\x64"
 !endif
-!define PRODUCT_PUBLISHER "Andrew Timmins"
+!define PRODUCT_PUBLISHER "Andy Timmins"
 !define PRODUCT_WEB_SITE "https://github.com/andrewtimmins/riscos-access-server"
 !define PRODUCT_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
 !define SERVICE_NAME "ShareFSServer"

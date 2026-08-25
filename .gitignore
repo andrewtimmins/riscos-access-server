@@ -2,3 +2,11 @@
 sharefs.conf
 !sharefs.conf.sample
 !sharefs.conf.sample-windows
+
+# macOS Finder metadata
+.DS_Store
+
+# Build output
+build/
+build*/
+releases/

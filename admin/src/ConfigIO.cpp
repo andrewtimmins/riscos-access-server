@@ -1,4 +1,21 @@
-// ShareFS Server - Admin GUI Config I/O Implementation
+/*
+  ShareFS Server - Admin GUI Config I/O Implementation
+
+  Copyright (C) 2025-2026 Andy Timmins
+
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
 
 #include "ConfigIO.h"
 #include <fstream>
@@ -92,7 +109,9 @@ bool SfsConfig::Load(const std::string& path, std::string& error) {
         
         // Parse based on current section
         if (currentSection == "server") {
-            if (key == "log_level") {
+            if (key == "log_file") {
+                m_server.log_file = value;
+            } else if (key == "log_level") {
                 m_server.log_level = value;
             } else if (key == "broadcast_interval") {
                 try { m_server.broadcast_interval = std::stoi(value); } catch (...) { m_server.broadcast_interval = 3; }
@@ -154,6 +173,8 @@ bool SfsConfig::Save(const std::string& path, std::string& error) {
         // Server section
         file << "[server]\n";
         file << "log_level = " << m_server.log_level << "\n";
+        if (!m_server.log_file.empty())
+            file << "log_file = " << m_server.log_file << "\n";
         file << "broadcast_interval = " << m_server.broadcast_interval << "\n";
         file << "access_plus = " << (m_server.access_plus ? "true" : "false") << "\n";
         if (!m_server.bind_ip.empty()) {

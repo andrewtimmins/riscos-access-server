@@ -1,8 +1,26 @@
-// ShareFS Server - Admin GUI Server Panel
+/*
+  ShareFS Server - Admin GUI Server Panel
+
+  Copyright (C) 2025-2026 Andy Timmins
+
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
 
 #include "ServerPanel.h"
 #include "MainFrame.h"
 #include "UiHelpers.h"
+#include <wx/filedlg.h>
 #include <wx/spinctrl.h>
 #include <wx/statbox.h>
 
@@ -19,6 +37,27 @@
 
 #endif
 
+// Mirrors the fallback order in src/log.c so the tab reports where the log
+// actually lands rather than where it would ideally go.
+static wxString DefaultLogPath() {
+#ifdef __WXMSW__
+  wxString programData;
+  if (!wxGetEnv("ProgramData", &programData) || programData.empty())
+    programData = "C:\\ProgramData";
+  return programData + "\\ShareFS\\sharefs.log";
+#elif defined(__WXOSX__)
+  if (wxFileExists("/var/log/sharefs/sharefs.log"))
+    return "/var/log/sharefs/sharefs.log";
+  return wxGetHomeDir() + "/Library/Logs/ShareFS/sharefs.log";
+#else
+  if (wxFileExists("/var/log/sharefs/sharefs.log"))
+    return "/var/log/sharefs/sharefs.log";
+  return "/tmp/sharefs.log";
+#endif
+}
+
+enum { ID_BROWSE_CONFIG = wxID_HIGHEST + 500 };
+
 ServerPanel::ServerPanel(wxWindow *parent, MainFrame *frame)
     : wxPanel(parent), m_frame(frame) {
   wxBoxSizer *mainSizer = new wxBoxSizer(wxVERTICAL);
@@ -27,6 +66,25 @@ ServerPanel::ServerPanel(wxWindow *parent, MainFrame *frame)
   ui::StyleSectionTitle(title);
   mainSizer->Add(title, 0, wxLEFT | wxRIGHT | wxTOP, 15);
   mainSizer->AddSpacer(4);
+
+  // Which file these settings came from, and a way to open a different one.
+  wxBoxSizer *configRow = new wxBoxSizer(wxHORIZONTAL);
+  wxStaticText *configLabel =
+      new wxStaticText(this, wxID_ANY, "Configuration file:");
+  ui::StyleFieldLabel(configLabel);
+  configRow->Add(configLabel, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT,
+                 ui::kLabelGap);
+
+  m_configPath = new wxTextCtrl(this, wxID_ANY, "", wxDefaultPosition,
+                                wxDefaultSize, wxTE_READONLY);
+  m_configPath->SetHint("No configuration loaded");
+  configRow->Add(m_configPath, 1, wxALIGN_CENTER_VERTICAL);
+
+  wxButton *browseBtn = new wxButton(this, ID_BROWSE_CONFIG, "Open...");
+  browseBtn->Bind(wxEVT_BUTTON, &ServerPanel::OnBrowseConfig, this);
+  configRow->Add(browseBtn, 0, wxLEFT, ui::kTightGap);
+
+  mainSizer->Add(configRow, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 15);
 
   // Settings group
   wxStaticBoxSizer *settingsBox =
@@ -60,8 +118,9 @@ ServerPanel::ServerPanel(wxWindow *parent, MainFrame *frame)
   grid->Add(new wxStaticText(this, wxID_ANY, "Log Level:"), 0,
             wxALIGN_CENTER_VERTICAL);
   m_logLevel = new wxChoice(this, wxID_ANY);
+  // These must match sfs_log_level_from_string() in src/log.c exactly.
+  m_logLevel->Append("none");
   m_logLevel->Append("error");
-  m_logLevel->Append("warn");
   m_logLevel->Append("info");
   m_logLevel->Append("debug");
   m_logLevel->Append("protocol");
@@ -93,18 +152,67 @@ ServerPanel::ServerPanel(wxWindow *parent, MainFrame *frame)
   settingsBox->Add(grid, 1, wxEXPAND | wxALL, 10);
   mainSizer->Add(settingsBox, 0, wxEXPAND | wxLEFT | wxRIGHT, 15);
 
-  // Info text
   wxStaticText *info = new wxStaticText(
       this, wxID_ANY,
-      "Note: Changes take effect when the server is restarted.");
-  info->SetForegroundColour(wxColour(128, 128, 128));
-  mainSizer->Add(info, 0, wxALL, 15);
+      "Changes take effect when the server is restarted.");
+  info->SetForegroundColour(ui::MutedText(this));
+  mainSizer->Add(info, 0, wxLEFT | wxRIGHT | wxTOP, 15);
+
+  // Reference card. The lower half of this tab was previously empty; the
+  // ports and log location are the two things most often needed when a client
+  // cannot see the server.
+  wxStaticBoxSizer *refBox =
+      new wxStaticBoxSizer(wxVERTICAL, this, "Network and files");
+  wxFlexGridSizer *refGrid =
+      new wxFlexGridSizer(2, ui::kRowGap, ui::kLabelGap);
+  refGrid->AddGrowableCol(1);
+
+  auto addRefRow = [&](const wxString &label, const wxString &value) {
+    wxStaticText *l = new wxStaticText(this, wxID_ANY, label);
+    ui::StyleFieldLabel(l);
+    refGrid->Add(l, 0, wxALIGN_CENTER_VERTICAL);
+    refGrid->Add(new wxStaticText(this, wxID_ANY, value), 1, wxEXPAND);
+  };
+
+  addRefRow("Freeway discovery:", "UDP 32770");
+  addRefRow("Access+ authentication:", "UDP 32771");
+  addRefRow("File transfer:", "UDP 49171");
+
+  m_logPathLabel = new wxStaticText(this, wxID_ANY, wxString());
+  wxStaticText *logLabel = new wxStaticText(this, wxID_ANY, "Server log:");
+  ui::StyleFieldLabel(logLabel);
+  refGrid->Add(logLabel, 0, wxALIGN_CENTER_VERTICAL);
+  refGrid->Add(m_logPathLabel, 1, wxEXPAND);
+
+  refBox->Add(refGrid, 1, wxEXPAND | wxALL, 10);
+  mainSizer->Add(refBox, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 15);
+
+  // Reflect an explicit log_file when the configuration sets one.
+  const std::string &configured = m_frame->GetConfig().Server().log_file;
+  m_logPathLabel->SetLabel(configured.empty() ? DefaultLogPath()
+                                              : wxString(configured));
+
+  mainSizer->AddStretchSpacer();
 
   SetSizer(mainSizer);
 }
 
+void ServerPanel::OnBrowseConfig(wxCommandEvent &event) {
+  wxUnusedVar(event);
+
+  wxFileDialog dlg(this, "Open configuration file", "", "",
+                   "Configuration files (*.conf)|*.conf|All files (*.*)|*.*",
+                   wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+  if (dlg.ShowModal() != wxID_OK)
+    return;
+
+  m_frame->LoadConfig(dlg.GetPath().ToStdString());
+}
+
 void ServerPanel::RefreshFromConfig() {
   m_updating = true;
+
+  m_configPath->ChangeValue(m_frame->GetConfigPath());
 
   ServerConfig &cfg = m_frame->GetConfig().Server();
 

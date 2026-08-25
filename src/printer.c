@@ -1,6 +1,21 @@
-// ShareFS Server - Printer Support
-// Author: Andrew Timmins
-// License: GPL-3.0-only
+/*
+  ShareFS Server - Printer Support
+
+  Copyright (C) 2025-2026 Andy Timmins
+
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
 
 #include "printer.h"
 #include "platform.h"
@@ -85,6 +100,12 @@ static int replace_cmd(const char *tmpl, const char *filepath, char *out, size_t
     return 0;
 }
 
+#ifdef _WIN32
+#define SFS_DELETE_CMD "del /q"
+#else
+#define SFS_DELETE_CMD "rm -f"
+#endif
+
 static int process_spool(const sfs_printer_config *p) {
     char spool_dir[512];
     snprintf(spool_dir, sizeof(spool_dir), "%s/RemSpool", p->path);
@@ -110,12 +131,31 @@ static int process_spool(const sfs_printer_config *p) {
             continue;
         }
 
-        int rc = system(cmd);
-        if (rc != 0) {
-            sfs_log(SFS_LOG_ERROR, "printer %s command failed rc=%d", p->name, rc);
+        // Launched detached: waiting here blocked every other client for as
+        // long as the print command took to run. Because nothing waits for it,
+        // the job file cannot be deleted here either, so the cleanup is
+        // appended to the command and runs once it has finished.
+        char quoted_queue[1024];
+        char full[2048];
+        if (shell_quote(queue, quoted_queue, sizeof(quoted_queue)) != 0) {
+            sfs_log(SFS_LOG_ERROR, "printer %s spool path too long", p->name);
+            remove(queue);
+            continue;
         }
 
-        remove(queue);
+        int written = snprintf(full, sizeof(full), "%s ; %s %s", cmd,
+                               SFS_DELETE_CMD, quoted_queue);
+        if (written < 0 || written >= (int)sizeof(full)) {
+            sfs_log(SFS_LOG_ERROR, "printer %s command too long", p->name);
+            remove(queue);
+            continue;
+        }
+
+        if (sfs_spawn_detached(full) != 0) {
+            sfs_log(SFS_LOG_ERROR, "printer %s: could not run print command",
+                    p->name);
+            remove(queue);
+        }
     }
 
     closedir(d);

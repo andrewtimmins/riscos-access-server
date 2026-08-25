@@ -1,6 +1,24 @@
-// ShareFS Server - Admin GUI Control Panel
+/*
+  ShareFS Server - Admin GUI Control Panel
+
+  Copyright (C) 2025-2026 Andy Timmins
+
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
 
 #include "ControlPanel.h"
+#include "EmbeddedServer.h"
 #include "MainFrame.h"
 #include "UiHelpers.h"
 #include <wx/filedlg.h>
@@ -13,96 +31,46 @@
 #define SHAREFS_SERVICE_NAME TEXT("ShareFSServer")
 #endif
 
+// Prefixed to avoid colliding with the toolbar ids declared in MainFrame.h.
 enum {
-  ID_START = wxID_HIGHEST + 400,
-  ID_STOP,
-  ID_RESTART,
-  ID_CLEAR_LOG,
-  ID_BROWSE_CONFIG,
-  ID_TIMER
+  CP_ID_START = wxID_HIGHEST + 400,
+  CP_ID_STOP,
+  CP_ID_RESTART,
+  CP_ID_CLEAR_LOG,
+  CP_ID_TIMER
 };
 
 wxBEGIN_EVENT_TABLE(ControlPanel, wxPanel)
-    EVT_BUTTON(ID_START, ControlPanel::OnStart) EVT_BUTTON(ID_STOP,
+    EVT_BUTTON(CP_ID_START, ControlPanel::OnStart) EVT_BUTTON(CP_ID_STOP,
                                                            ControlPanel::OnStop)
-        EVT_BUTTON(ID_RESTART, ControlPanel::OnRestart)
-            EVT_BUTTON(ID_CLEAR_LOG, ControlPanel::OnClearLog)
-                EVT_BUTTON(ID_BROWSE_CONFIG, ControlPanel::OnBrowseConfig)
-                    EVT_END_PROCESS(wxID_ANY, ControlPanel::OnProcessTerminate)
-                        EVT_TIMER(ID_TIMER, ControlPanel::OnTimer)
+        EVT_BUTTON(CP_ID_RESTART, ControlPanel::OnRestart)
+            EVT_BUTTON(CP_ID_CLEAR_LOG, ControlPanel::OnClearLog)
+                        EVT_TIMER(CP_ID_TIMER, ControlPanel::OnTimer)
                             wxEND_EVENT_TABLE()
 
                                 ControlPanel::ControlPanel(wxWindow *parent,
                                                            MainFrame *frame)
-    : wxPanel(parent), m_frame(frame), m_timer(this, ID_TIMER) {
+    : wxPanel(parent), m_frame(frame), m_timer(this, CP_ID_TIMER) {
   wxBoxSizer *mainSizer = new wxBoxSizer(wxVERTICAL);
 
-  wxStaticText *title = new wxStaticText(this, wxID_ANY, "Server Control");
+  wxStaticText *title = new wxStaticText(this, wxID_ANY, "Server Activity");
   ui::StyleSectionTitle(title);
-  mainSizer->Add(title, 0, wxLEFT | wxRIGHT | wxTOP, 15);
+  mainSizer->Add(title, 0, wxLEFT | wxRIGHT | wxTOP, ui::kPagePad);
   mainSizer->AddSpacer(4);
 
-  wxStaticBoxSizer *statusBox =
-      new wxStaticBoxSizer(wxVERTICAL, this, "Status");
+  wxStaticText *desc = new wxStaticText(
+      this, wxID_ANY,
+      "Live output from the server. Start and stop it from the toolbar.");
+  desc->SetForegroundColour(ui::MutedText(this));
+  mainSizer->Add(desc, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, ui::kPagePad);
 
-  wxBoxSizer *statusRow = new wxBoxSizer(wxHORIZONTAL);
-  m_statusLabel = new wxStaticText(this, wxID_ANY, "Stopped");
-  wxFont statusFont = m_statusLabel->GetFont();
-  statusFont.SetPointSize(statusFont.GetPointSize() + 1);
-  statusFont.SetWeight(wxFONTWEIGHT_BOLD);
-  m_statusLabel->SetFont(statusFont);
-  m_statusLabel->SetForegroundColour(*wxRED);
-  m_statusLabel->SetMinSize(wxSize(280, -1));
-  statusRow->Add(m_statusLabel, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, 12);
-
-  wxBoxSizer *buttonSizer = new wxBoxSizer(wxHORIZONTAL);
-  m_startBtn = new wxButton(this, ID_START, "Start");
-  m_stopBtn = new wxButton(this, ID_STOP, "Stop");
-  m_restartBtn = new wxButton(this, ID_RESTART, "Restart");
-  m_stopBtn->Disable();
-  m_restartBtn->Disable();
-  buttonSizer->Add(m_startBtn, 0, wxRIGHT, 5);
-  buttonSizer->Add(m_stopBtn, 0, wxRIGHT, 5);
-  buttonSizer->Add(m_restartBtn, 0);
-  statusRow->Add(buttonSizer, 0, wxALIGN_CENTER_VERTICAL);
-  statusBox->Add(statusRow, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 10);
-
-  m_pidLabel = new wxStaticText(this, wxID_ANY, "");
-  m_pidLabel->SetForegroundColour(ui::MutedText(this));
-  statusBox->Add(m_pidLabel, 0, wxALL, 10);
-
-  mainSizer->Add(statusBox, 0, wxEXPAND | wxLEFT | wxRIGHT, 15);
-
-  // Config section
-  wxFlexGridSizer *configGrid = new wxFlexGridSizer(2, 3, 8, 10);
-  configGrid->AddGrowableCol(1);
-
-  configGrid->Add(new wxStaticText(this, wxID_ANY, "Config File:"), 0,
-                  wxALIGN_CENTER_VERTICAL);
-  {
-    wxString defaultConfig;
-#ifdef __WXMSW__
-    wxString pd;
-    if (!wxGetEnv("ProgramData", &pd) || pd.empty()) pd = "C:";
-    defaultConfig = pd + "\\ShareFS\\sharefs.conf";
-#else
-    defaultConfig = "/etc/sharefs.conf";
-#endif
-    m_configPath = new wxTextCtrl(this, wxID_ANY, defaultConfig);
-  }
-  configGrid->Add(m_configPath, 1, wxEXPAND);
-  wxButton *browseBtn = new wxButton(this, ID_BROWSE_CONFIG, "Browse...");
-  configGrid->Add(browseBtn, 0);
-
-  mainSizer->Add(configGrid, 0, wxEXPAND | wxALL, 15);
-
-  // Log section
   wxBoxSizer *logHeader = new wxBoxSizer(wxHORIZONTAL);
   logHeader->Add(new wxStaticText(this, wxID_ANY, "Server Log"), 1,
                  wxALIGN_CENTER_VERTICAL);
-  wxButton *clearBtn = new wxButton(this, ID_CLEAR_LOG, "Clear");
+  wxButton *clearBtn = new wxButton(this, CP_ID_CLEAR_LOG, "Clear");
   logHeader->Add(clearBtn, 0);
-  mainSizer->Add(logHeader, 0, wxEXPAND | wxLEFT | wxRIGHT, 15);
+  mainSizer->Add(logHeader, 0, wxEXPAND | wxLEFT | wxRIGHT, ui::kPagePad);
+  mainSizer->AddSpacer(ui::kTightGap);
 
   m_logView =
       new wxTextCtrl(this, wxID_ANY, "", wxDefaultPosition, wxDefaultSize,
@@ -110,9 +78,15 @@ wxBEGIN_EVENT_TABLE(ControlPanel, wxPanel)
   wxFont monoFont(10, wxFONTFAMILY_TELETYPE, wxFONTSTYLE_NORMAL,
                   wxFONTWEIGHT_NORMAL);
   m_logView->SetFont(monoFont);
-  mainSizer->Add(m_logView, 1, wxEXPAND | wxALL, 15);
+  mainSizer->Add(m_logView, 1,
+                 wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, ui::kPagePad);
 
   SetSizer(mainSizer);
+
+  // Log lines and the stop notification arrive from the server thread as
+  // queued events; see EmbeddedServer.h.
+  Bind(EVT_EMBEDDED_SERVER_LOG, &ControlPanel::OnEmbeddedLog, this);
+  Bind(EVT_EMBEDDED_SERVER_STOPPED, &ControlPanel::OnEmbeddedStopped, this);
 
   AppendLog("[ADMIN] Ready. Click Start to launch the server.\n");
 
@@ -123,71 +97,67 @@ wxBEGIN_EVENT_TABLE(ControlPanel, wxPanel)
 
 ControlPanel::~ControlPanel() { StopServer(); }
 
-void ControlPanel::RefreshFromConfig() {
-  // Update config path from main frame's loaded config
-  const std::string &path = m_frame->GetConfigPath();
-  if (!path.empty()) {
-    m_configPath->SetValue(path);
-  }
-}
+void ControlPanel::RefreshFromConfig() { UpdateStatus(); }
 
 void ControlPanel::UpdateStatus() {
-  bool localRunning = (m_running && m_pid > 0);
-  bool systemdRunning = CheckSystemdStatus();
+  const bool localRunning = (m_embedded && m_embedded->IsRunning());
+  const bool systemdRunning = CheckSystemdStatus();
 #ifdef _WIN32
-  bool windowsServiceRunning = CheckWindowsServiceStatus();
+  const bool windowsServiceRunning = CheckWindowsServiceStatus();
 #else
-  bool windowsServiceRunning = false;
+  const bool windowsServiceRunning = false;
 #endif
 
+  wxString label;
   if (localRunning) {
-    m_statusLabel->SetLabel("Running (Local)");
-    m_statusLabel->SetForegroundColour(wxColour(0, 150, 0));
-    m_pidLabel->SetLabel(wxString::Format("PID: %ld", m_pid));
-    m_startBtn->Disable();
-    m_stopBtn->Enable();
-    m_restartBtn->Enable();
+    label = "Running";
+    m_running = true;
     m_isSystemd = false;
 #ifdef _WIN32
     m_isWindowsService = false;
 #endif
   } else if (systemdRunning) {
-    m_statusLabel->SetLabel("Running (System Service)");
-    m_statusLabel->SetForegroundColour(wxColour(0, 150, 0));
-    m_pidLabel->SetLabel("Managed by systemd");
-    m_startBtn->Disable();
-    m_stopBtn->Enable();
-    m_restartBtn->Enable();
+    label = "Running (System Service)";
+    m_running = true;
     m_isSystemd = true;
-    m_running = true; // Mark as running for logical checks
 #ifdef _WIN32
     m_isWindowsService = false;
 #endif
   } else if (windowsServiceRunning) {
-    m_statusLabel->SetLabel("Running (Windows Service)");
-    m_statusLabel->SetForegroundColour(wxColour(0, 150, 0));
-    m_pidLabel->SetLabel("Managed by Service Control Manager");
-    m_startBtn->Disable();
-    m_stopBtn->Enable();
-    m_restartBtn->Enable();
+    label = "Running (Windows Service)";
+    m_running = true;
+    m_isSystemd = false;
 #ifdef _WIN32
     m_isWindowsService = true;
 #endif
-    m_running = true; // Mark as running for logical checks
-    m_isSystemd = false;
   } else {
-    m_statusLabel->SetLabel("Stopped");
-    m_statusLabel->SetForegroundColour(*wxRED);
-    m_pidLabel->SetLabel("");
-    m_startBtn->Enable();
-    m_stopBtn->Disable();
-    m_restartBtn->Disable();
+    label = "Stopped";
     m_running = false;
     m_isSystemd = false;
 #ifdef _WIN32
     m_isWindowsService = false;
 #endif
   }
+
+  // The toolbar and status bar are the only places state is shown now.
+  if (m_frame) {
+    m_frame->SetServerStatus(label, m_running);
+    m_frame->SetTransportState(m_running);
+  }
+}
+
+// Pick a colour for one log line from its severity, so problems stand out
+// instead of being buried in a wall of monospace.
+static wxColour LogLineColour(const wxString &line) {
+  if (line.Contains("ERROR") || line.Contains("Error") ||
+      line.Contains("[ERROR]") || line.Contains("failed") ||
+      line.Contains("Failed"))
+    return ui::Danger();
+  if (line.Contains("Warning") || line.Contains("WARN"))
+    return ui::Warning();
+  if (line.StartsWith("[ADMIN]"))
+    return ui::Neutral();
+  return wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOWTEXT);
 }
 
 void ControlPanel::AppendLog(const wxString &text) {
@@ -196,35 +166,24 @@ void ControlPanel::AppendLog(const wxString &text) {
     long trimPos = m_logView->XYToPosition(0, 1000);
     if (trimPos > 0) m_logView->Remove(0, trimPos);
   }
-  m_logView->AppendText(text);
+
+  // Style each line individually; a single write may carry several.
+  size_t start = 0;
+  while (start < text.length()) {
+    size_t nl = text.find('\n', start);
+    bool hasNewline = (nl != wxString::npos);
+    size_t end = hasNewline ? nl + 1 : text.length();
+    wxString line = text.Mid(start, end - start);
+
+    m_logView->SetDefaultStyle(wxTextAttr(LogLineColour(line)));
+    m_logView->AppendText(line);
+
+    start = end;
+  }
+
+  m_logView->SetDefaultStyle(
+      wxTextAttr(wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOWTEXT)));
   m_logView->ShowPosition(m_logView->GetLastPosition());
-}
-
-void ControlPanel::ReadProcessOutput() {
-  if (!m_process)
-    return;
-
-  wxInputStream *in = m_process->GetInputStream();
-  if (in && in->CanRead()) {
-    wxTextInputStream tis(*in);
-    while (in->CanRead()) {
-      wxString line = tis.ReadLine();
-      if (!line.empty()) {
-        AppendLog(line + "\n");
-      }
-    }
-  }
-
-  wxInputStream *err = m_process->GetErrorStream();
-  if (err && err->CanRead()) {
-    wxTextInputStream tis(*err);
-    while (err->CanRead()) {
-      wxString line = tis.ReadLine();
-      if (!line.empty()) {
-        AppendLog(line + "\n");
-      }
-    }
-  }
 }
 
 bool ControlPanel::CheckSystemdStatus() {
@@ -347,7 +306,10 @@ bool ControlPanel::IsSystemdActive() { return m_isSystemd; }
 
 void ControlPanel::OnStart(wxCommandEvent &event) {
   wxUnusedVar(event);
+  StartServer();
+}
 
+void ControlPanel::StartServer() {
   if (m_running)
     return;
 
@@ -387,50 +349,23 @@ void ControlPanel::OnStart(wxCommandEvent &event) {
   }
 #endif
 
-  wxString config = m_configPath->GetValue();
+  const wxString config = m_frame->GetConfigPath();
 
   if (config.empty()) {
     AppendLog("[ERROR] No configuration file specified.\n");
     return;
   }
 
-  // Find the ShareFS Server binary; search common locations in priority order
-  wxFileName exePath(wxStandardPaths::Get().GetExecutablePath());
-  wxString exeDir = exePath.GetPath();
-  wxString sep = wxFileName::GetPathSeparator();
+  // Run the server inside this process rather than spawning sharefs-server.
+  // The status is then a fact rather than a guess, log lines arrive directly,
+  // and there is no binary to go looking for.
+  if (!m_embedded)
+    m_embedded.reset(new EmbeddedServer(this));
 
-  wxArrayString candidates;
-  candidates.Add(exeDir + sep + ".." + sep + "src" + sep + "sharefs-server");
-  candidates.Add(exeDir + sep + "sharefs-server");
-#ifndef _WIN32
-  candidates.Add("/usr/local/bin/sharefs-server");
-  candidates.Add("/usr/bin/sharefs-server");
-#else
-  candidates.Add("C:\\ShareFS\\sharefs-server.exe");
-#endif
-
-  wxString serverPath = "sharefs-server"; // fallback: search PATH
-  for (size_t i = 0; i < candidates.GetCount(); ++i) {
-    if (wxFileExists(candidates[i])) {
-      serverPath = candidates[i];
-      break;
-    }
-  }
-
-  // Build command
-  wxString cmd = serverPath;
-  cmd += " " + config;
-
-  // Create process
-  m_process = new wxProcess(this);
-  m_process->Redirect();
-
-  m_pid = wxExecute(cmd, wxEXEC_ASYNC | wxEXEC_MAKE_GROUP_LEADER, m_process);
-
-  if (m_pid <= 0) {
-    AppendLog("[ERROR] Failed to start server.\n");
-    delete m_process;
-    m_process = nullptr;
+  wxString error;
+  if (!m_embedded->Start(config, error)) {
+    AppendLog("[ERROR] " + error + "\n");
+    UpdateStatus();
     return;
   }
 
@@ -439,11 +374,8 @@ void ControlPanel::OnStart(wxCommandEvent &event) {
 #ifdef _WIN32
   m_isWindowsService = false;
 #endif
-  AppendLog(wxString::Format("[ADMIN] Server started (PID %ld)\n", m_pid));
+  AppendLog("[ADMIN] Server started (in-process).\n");
   UpdateStatus();
-
-  // Start timer to read output
-  m_timer.Start(500);
 }
 
 void ControlPanel::OnStop(wxCommandEvent &event) {
@@ -483,30 +415,16 @@ void ControlPanel::StopServer() {
     return;
   }
 
-  if (m_pid <= 0)
+  if (!m_embedded || !m_embedded->IsRunning())
     return;
-
-  m_timer.Stop();
-  m_running = false; // Set early to prevent race conditions
 
   AppendLog("[ADMIN] Stopping server...\n");
 
-  // Send termination signal
-  if (m_pid > 0) {
-    wxKill(m_pid, wxSIGTERM);
-  }
+  // Blocks until the server thread has unwound and released its sockets, so a
+  // restart immediately afterwards can bind them again.
+  m_embedded->Stop();
 
-  // Give it a moment to terminate
-  wxMilliSleep(300);
-
-  // Clean up process object if still exists
-  if (m_process) {
-    // Detach to avoid crash - let the event handler clean up
-    m_process->Detach();
-    m_process = nullptr;
-  }
-
-  m_pid = 0;
+  m_running = false;
   AppendLog("[ADMIN] Server stopped.\n");
   UpdateStatus();
 }
@@ -552,49 +470,27 @@ void ControlPanel::OnClearLog(wxCommandEvent &event) {
   m_logView->Clear();
 }
 
-void ControlPanel::OnBrowseConfig(wxCommandEvent &event) {
-  wxUnusedVar(event);
-
-  wxFileDialog dlg(this, "Select Configuration File", "", "",
-                   "Config files (*.conf)|*.conf|All files (*.*)|*.*",
-                   wxFD_OPEN | wxFD_FILE_MUST_EXIST);
-
-  if (dlg.ShowModal() == wxID_OK) {
-    m_configPath->SetValue(dlg.GetPath());
-  }
+// A log line from the embedded server, marshalled onto the GUI thread.
+void ControlPanel::OnEmbeddedLog(wxThreadEvent &event) {
+  AppendLog(event.GetString() + "\n");
 }
 
-void ControlPanel::OnProcessTerminate(wxProcessEvent &event) {
+// The server thread has finished, whether we asked it to or not.
+void ControlPanel::OnEmbeddedStopped(wxThreadEvent &event) {
   wxUnusedVar(event);
-
-  m_timer.Stop();
-
-  if (m_process) {
-    ReadProcessOutput();
-    int exitCode = event.GetExitCode();
-    AppendLog(
-        wxString::Format("[ADMIN] Server exited with code %d\n", exitCode));
-    delete m_process;
-    m_process = nullptr;
-  }
-
   m_running = false;
-  m_pid = 0;
   UpdateStatus();
 }
 
 void ControlPanel::OnTimer(wxTimerEvent &event) {
   wxUnusedVar(event);
-  if (!m_isSystemd && m_pid > 0) {
-    ReadProcessOutput();
-  }
   if (m_running && m_isSystemd) {
     // Periodically verify systemd is still running
     if (!CheckSystemdStatus()) {
       UpdateStatus(); // Will detect stopped state
     }
-  } else if (!m_running && !m_pid) {
-    // Periodically checking if it started externally
+  } else if (!m_running) {
+    // Periodically check whether a system service started it behind our back.
     UpdateStatus();
   }
   // Note: UpdateStatus calls CheckSystemdStatus appropriately

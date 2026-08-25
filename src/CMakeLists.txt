@@ -21,6 +21,12 @@ target_include_directories(sfs
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+# Single-sourced from project() so the binary, the packages and the About
+# dialog can never disagree about the version (issue #17).
+target_compile_definitions(sfs
+    PUBLIC "SHAREFS_VERSION=\"${PROJECT_VERSION}\""
+)
+
 target_link_libraries(sharefs-server
     sfs
 )

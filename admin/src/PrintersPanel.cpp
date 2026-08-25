@@ -1,4 +1,21 @@
-// ShareFS Server - Admin GUI Printers Panel
+/*
+  ShareFS Server - Admin GUI Printers Panel
+
+  Copyright (C) 2025-2026 Andy Timmins
+
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
 
 #include "PrintersPanel.h"
 #include "MainFrame.h"
@@ -33,13 +50,14 @@ PrintersPanel::PrintersPanel(wxWindow *parent, MainFrame *frame)
 
   m_list = new wxListCtrl(this, ID_PRINTER_LIST, wxDefaultPosition, wxDefaultSize,
                           wxLC_REPORT | wxLC_SINGLE_SEL);
-  m_list->SetMinSize(wxSize(260, 160));
-  m_list->InsertColumn(0, "Printer Name", wxLIST_FORMAT_LEFT, 180);
+  m_list->SetMinSize(wxSize(300, 200));
+  m_list->InsertColumn(0, "Printer Name", wxLIST_FORMAT_LEFT, 140);
+  m_list->InsertColumn(1, "Spool Path", wxLIST_FORMAT_LEFT, 220);
   m_list->Bind(wxEVT_SIZE, [this](wxSizeEvent &e) {
     e.Skip();
-    ui::ResizeListColumns(m_list);
+    ui::ResizeListColumns(m_list, {2, 3});
   });
-  contentSizer->Add(m_list, 0, wxEXPAND | wxRIGHT, 10);
+  contentSizer->Add(m_list, 2, wxEXPAND | wxRIGHT, ui::kGroupGap);
 
   // Detail panel
   m_detailPanel = new wxPanel(this);
@@ -119,6 +137,11 @@ PrintersPanel::PrintersPanel(wxWindow *parent, MainFrame *frame)
   m_commandCtrl->Bind(wxEVT_TEXT, &PrintersPanel::OnDetailChanged, this);
   grid->Add(m_commandCtrl, 1, wxEXPAND);
 
+  grid->AddSpacer(0);
+  m_commandHint = new wxStaticText(m_detailPanel, wxID_ANY, "");
+  m_commandHint->Hide();
+  grid->Add(m_commandHint, 0, wxEXPAND);
+
   detailSizer->Add(grid, 0, wxEXPAND);
 
   wxStaticText *hint =
@@ -128,7 +151,7 @@ PrintersPanel::PrintersPanel(wxWindow *parent, MainFrame *frame)
   detailSizer->Add(hint, 0, wxTOP, 10);
 
   m_detailPanel->SetSizer(detailSizer);
-  contentSizer->Add(m_detailPanel, 1, wxEXPAND);
+  contentSizer->Add(m_detailPanel, 3, wxEXPAND);
   mainSizer->Add(contentSizer, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 15);
 
   SetSizer(mainSizer);
@@ -154,7 +177,9 @@ void PrintersPanel::RefreshFromConfig() {
 void PrintersPanel::RefreshList() {
   m_list->DeleteAllItems();
   for (size_t i = 0; i < m_frame->GetConfig().Printers().size(); ++i) {
-    m_list->InsertItem(i, m_frame->GetConfig().Printers()[i].name);
+    const PrinterConfig &printer = m_frame->GetConfig().Printers()[i];
+    long idx = m_list->InsertItem(i, printer.name);
+    m_list->SetItem(idx, 1, printer.path);
   }
 }
 
@@ -200,6 +225,27 @@ void PrintersPanel::SaveCurrentDetails() {
   printer.command = m_commandCtrl->GetValue().ToStdString();
 
   m_list->SetItemText(m_currentIndex, printer.name);
+  m_list->SetItem(m_currentIndex, 1, printer.path);
+
+  UpdateValidation();
+}
+
+void PrintersPanel::UpdateValidation() {
+  // Without %f the spool file path is never substituted, so the command runs
+  // against nothing and jobs silently vanish.
+  const wxString command = m_commandCtrl->GetValue();
+  const bool bad = !command.empty() && !command.Contains("%f");
+  ui::SetFieldError(m_commandCtrl, m_commandHint, bad,
+                    "Needs %f, replaced with the spool file path");
+
+  if (!bad) {
+    const wxString definition = m_definitionCtrl->GetValue();
+    if (!definition.empty() && !wxFileExists(definition))
+      ui::SetFieldError(nullptr, m_commandHint, true,
+                        "Printer definition file not found");
+  }
+
+  m_detailPanel->Layout();
 }
 
 void PrintersPanel::OnAddPrinter(wxCommandEvent &event) {
@@ -225,10 +271,7 @@ void PrintersPanel::OnRemovePrinter(wxCommandEvent &event) {
     return;
 
   const std::string& name = m_frame->GetConfig().Printers()[m_currentIndex].name;
-  int result = wxMessageBox(
-      wxString::Format("Remove printer '%s'?", name),
-      "Confirm Remove", wxYES_NO | wxICON_QUESTION, this);
-  if (result != wxYES)
+  if (!ui::Ask(this, "Confirm Remove", wxString::Format("Remove printer '%s'?", name)))
     return;
 
   m_frame->GetConfig().Printers().erase(

@@ -1,6 +1,6 @@
 # ShareFS Server
 
-**Author:** Andrew Timmins  
+**Author:** Andy Timmins  
 **License:** GPL-3.0-only
 
 ShareFS Server is a C11 implementation of an Acorn ShareFS-compatible server for Linux and Windows. It allows modern computers to share files with RISC OS machines over a local network using the native ShareFS protocol.
@@ -30,6 +30,21 @@ ShareFS Server is a C11 implementation of an Acorn ShareFS-compatible server for
 3. **That's it!** The server starts automatically as a system service.
    - **Configure:** Run `sharefs-admin` (or edit `/etc/sharefs.conf`)
    - **Status:** `sudo systemctl status sharefs`
+
+### macOS (Apple Silicon and Intel)
+
+1. Download `sharefs-server_*-macos-universal.zip` from the release assets. One
+   download covers both Apple Silicon and Intel; the binaries are universal.
+2. Unpack it and drag `sharefs-admin.app` to Applications, or run
+   `./sharefs-server` from the unpacked folder.
+3. The first time it runs, macOS asks for **Local Network** access. Allow it,
+   or RISC OS machines will not see your shares.
+4. The app is signed ad-hoc rather than notarised, so the first launch needs
+   right-click then **Open**, or `xattr -dr com.apple.quarantine sharefs-admin.app`.
+
+Configuration lives at `/opt/homebrew/etc/sharefs.conf`, `/usr/local/etc/sharefs.conf`
+or `/etc/sharefs.conf`, whichever exists; the log goes to
+`~/Library/Logs/ShareFS/sharefs.log` unless `log_file` says otherwise.
 
 ### Windows
 
@@ -148,6 +163,37 @@ There is no single `./build.sh` flag for both Linux arches. Use one of these app
 ./build.sh --cross-arm64
 ```
 
+### Building for macOS
+
+`build-macos.sh` builds a single-architecture slice, bundles the libraries the
+admin GUI needs into the `.app` so it runs without Homebrew, and can fuse two
+slices into a universal build.
+
+```bash
+brew install cmake wxwidgets
+./build-macos.sh                     # slice for this machine's architecture
+./build-macos.sh --arch arm64 --zip  # slice plus a zip
+```
+
+For a universal release both slices are needed. The server has no
+dependencies, but the admin GUI links wxWidgets, which Homebrew ships
+per-architecture only, so each slice must be built against a Homebrew matching
+its own architecture:
+
+```bash
+./build-macos.sh --arch arm64        # against /opt/homebrew
+./build-macos.sh --arch x86_64       # against /usr/local (Intel Homebrew)
+./build-macos.sh --fuse --zip        # lipo both into releases/macos
+```
+
+Both Homebrews must be on the same formula versions. `lipo` fuses two files
+into one, and a library from two different upstream releases is not one
+library; the script stops with a clear error if the slices disagree.
+
+CI does this on every push, cross-compiling the x86_64 slice on an Apple
+Silicon runner against a Rosetta Homebrew, because free Intel runners are
+effectively unavailable.
+
 ### Building for Windows
 
 Cross-compile for Windows x64 from Linux:
@@ -188,6 +234,9 @@ GitHub Actions (`.github/workflows/build.yml`) runs on every push and pull reque
 | `linux-arm64` | `releases/linux/arm64/` + `.deb`, tests (native ARM runner) |
 | `linux-arm64-cross` | Smoke test: cross-compiled arm64 server |
 | `windows-x64` | `releases/windows/x64/` zip (+ NSIS on tags) |
+| `macos-arm64` | Apple Silicon slice, tests |
+| `macos-x86_64` | Intel slice, cross-compiled under Rosetta |
+| `macos-universal` | Fuses both slices, verifies, produces the universal zip |
 
 **Publishing a release:** push a version tag (e.g. `v0.1.1`). The workflow builds full Linux amd64/arm64 packages, a complete Windows x64 zip with admin GUI (wxWidgets cached after the first run), NSIS installer, and attaches everything to a GitHub Release automatically.
 
@@ -295,9 +344,24 @@ For automatic startup and running in the background, you can install the server 
 
 ### Using the Admin GUI
 
-The **ShareFS Admin** GUI allows easy configuration and control:
+The **ShareFS Admin** GUI allows easy configuration and control.
+
+**How the two binaries relate.** `sharefs-server` is the headless server: plain
+C11 with no GUI dependency, and it is what the systemd unit and the Windows
+service run. `sharefs-admin` links the same server core, so when you press
+**Start** in the GUI the server runs on a worker thread *inside the admin
+process* rather than as a separate child. That means the status it shows is a
+fact rather than a probe, and the log pane is fed straight from the server.
+
+If a system service is already running the server, the GUI detects that and
+drives the service instead, leaving its own in-process host idle.
+
+`sharefs-server` accepts `--no-ui` for symmetry with the GUI; the server binary
+is always headless, so the flag is a no-op and exists so scripts can pass it
+freely. `--help` lists the options.
 
 **Features:**
+
 - **Server Tab** - Configure log level, broadcast interval, and Access+ authentication
 - **Shares Tab** - Add, edit, and remove file shares
 - **Printers Tab** - Configure network printer shares
@@ -363,6 +427,7 @@ png = B60
 | Setting             | Description                                             | Default         |
 |---------------------|---------------------------------------------------------|-----------------|
 | `log_level`         | `none`, `error`, `info`, `debug`, or `protocol`       | `info`          |
+| `log_file`          | Where to write the log (omit for the platform default)  | see below       |
 | `broadcast_interval`| Seconds between Freeway broadcasts (0 to disable)       | `3`             |
 | `access_plus`       | Enable Access+ authentication support                   | `true`          |
 | `bind_ip`           | IP address to bind to (omit for all interfaces)       | all interfaces  |
@@ -407,9 +472,42 @@ For protocol-level detail, see [docs/protocol.md](docs/protocol.md).
 
 Ensure the server has read/write access to the share paths configured.
 
+On **Linux**, the packaged service is hardened and only grants write access to
+`/var/log/sharefs` and `/srv/sharefs`. To share from elsewhere, add the path:
+
+```bash
+sudo systemctl edit sharefs
+# [Service]
+# ReadWritePaths=/mnt/archive
+```
+
+Home directories are read-only by default; override `ProtectHome=false` the
+same way if you share from `/home`.
+
+On **macOS**, folders under `~/Documents`, `~/Desktop` and `~/Downloads` are
+protected by the system privacy controls, and a background server cannot
+prompt for access. Either share from somewhere else, or grant the binary Full
+Disk Access in System Settings > Privacy & Security. macOS will also ask for
+Local Network permission the first time the server runs; without it, RISC OS
+machines will not see the shares.
+
+### Symlinks inside a share
+
+Paths are resolved and checked against the share root, so a symbolic link
+pointing outside the share is refused rather than followed. Keep the content
+you want served inside the share directory itself.
+
 ### Log file location / permission denied
 
-By default on Linux the server writes to `/var/log/sharefs/sharefs.log`. If that path is not writable (e.g., running unprivileged or without the service-created directory), the server falls back to `/tmp/sharefs.log` and prints a warning. On Windows, logging uses `C:\ShareFS\sharefs.log` and falls back to `./sharefs.log` when the primary path is unavailable.
+Set `log_file` in the `[server]` section to put the log wherever you want. If it is not set, the default depends on the platform:
+
+| Platform | Preferred | Fallback when not writable |
+|----------|-----------|----------------------------|
+| Linux    | `/var/log/sharefs/sharefs.log` | `/tmp/sharefs.log` |
+| macOS    | `/var/log/sharefs/sharefs.log` | `~/Library/Logs/ShareFS/sharefs.log` |
+| Windows  | `%ProgramData%\ShareFS\sharefs.log` | the folder holding the executable |
+
+The server logs its version and the log file it opened at startup, so `sharefs.log` always records which build produced it.
 
 ### Admin GUI won't start
 
@@ -421,4 +519,4 @@ Install wxWidgets development packages before building (see **Building** above).
 
 This project is licensed under the GNU General Public License v3.0. See LICENSE file for details.
 
-Copyright © Andrew Timmins, 2025.
+Copyright © Andy Timmins, 2025.
