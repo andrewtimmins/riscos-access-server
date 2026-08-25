@@ -461,6 +461,59 @@ static int build_host_path_from_ro(const char *share_path, const char *rest,
   return 0;
 }
 
+// Longest path we will canonicalise. POSIX has PATH_MAX, Windows MAX_PATH,
+// and MinGW does not always define either usefully.
+#ifdef _WIN32
+#define SFS_PATH_MAX 4096
+#else
+#ifdef PATH_MAX
+#define SFS_PATH_MAX PATH_MAX
+#else
+#define SFS_PATH_MAX 4096
+#endif
+#endif
+
+// Resolve a path to its canonical form, following symbolic links (and, on
+// Windows, junctions and other reparse points). Returns 0 on success, -1 if
+// the path does not exist, which is not an error to the caller: it walks up to
+// the nearest ancestor that does.
+static int canonical_path(const char *in, char *out, size_t out_sz) {
+#ifdef _WIN32
+  // FILE_FLAG_BACKUP_SEMANTICS is what allows a directory to be opened.
+  HANDLE h = CreateFileA(in, 0,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+  if (h == INVALID_HANDLE_VALUE)
+    return -1;
+
+  DWORD n = GetFinalPathNameByHandleA(h, out, (DWORD)out_sz,
+                                      FILE_NAME_NORMALIZED);
+  CloseHandle(h);
+  return (n > 0 && n < out_sz) ? 0 : -1;
+#else
+  // realpath() writes up to PATH_MAX bytes and has no way to be told the
+  // buffer is smaller, so refuse rather than risk overrunning it.
+  if (out_sz < SFS_PATH_MAX)
+    return -1;
+  return realpath(in, out) ? 0 : -1;
+#endif
+}
+
+// Strip the last component from a path, in place. Returns 0 when there is
+// nothing left to strip.
+static int strip_last_component(char *path) {
+  char *slash = strrchr(path, '/');
+#ifdef _WIN32
+  char *back = strrchr(path, '\\');
+  if (back && (!slash || back > slash))
+    slash = back;
+#endif
+  if (!slash || slash == path)
+    return 0;
+  *slash = '\0';
+  return 1;
+}
+
 // Confirm that a resolved host path really lies inside its share root.
 //
 // sfs_path_is_safe() rejects ".." and absolute paths, but it works on the
@@ -468,22 +521,18 @@ static int build_host_path_from_ro(const char *share_path, const char *rest,
 // wherever it pointed. Compare the canonical paths instead. The target may
 // not exist yet (creates), so walk up to the nearest ancestor that does.
 static int path_within_share(const char *share_root, const char *host_path) {
-  char real_root[PATH_MAX];
-  if (!realpath(share_root, real_root))
+  char real_root[SFS_PATH_MAX];
+  if (canonical_path(share_root, real_root, sizeof(real_root)) != 0)
     return 0;
 
-  char candidate[1024];
+  char candidate[SFS_PATH_MAX];
   if (snprintf(candidate, sizeof(candidate), "%s", host_path) < 0)
     return 0;
 
-  char real_path[PATH_MAX];
-  while (!realpath(candidate, real_path)) {
-    // Strip the last component and try again; a create targets a path that
-    // does not exist, but its parent must still be inside the share.
-    char *slash = strrchr(candidate, '/');
-    if (!slash || slash == candidate)
+  char real_path[SFS_PATH_MAX];
+  while (canonical_path(candidate, real_path, sizeof(real_path)) != 0) {
+    if (!strip_last_component(candidate))
       return 0;
-    *slash = '\0';
   }
 
   size_t root_len = strlen(real_root);
@@ -491,7 +540,8 @@ static int path_within_share(const char *share_root, const char *host_path) {
     return 0;
   // Either exactly the root, or a path below it. Guards against a sibling
   // directory whose name merely starts with the root's name.
-  return real_path[root_len] == '\0' || real_path[root_len] == '/';
+  return real_path[root_len] == '\0' || real_path[root_len] == '/' ||
+         real_path[root_len] == '\\';
 }
 
 static int resolve_path(const sfs_config *cfg, const char *ro_path, char *out,

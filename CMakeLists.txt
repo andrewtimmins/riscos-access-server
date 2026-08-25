@@ -56,8 +56,8 @@ set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
 set(CPACK_PACKAGE_VERSION_MAJOR ${PROJECT_VERSION_MAJOR})
 set(CPACK_PACKAGE_VERSION_MINOR ${PROJECT_VERSION_MINOR})
 set(CPACK_PACKAGE_VERSION_PATCH ${PROJECT_VERSION_PATCH})
-set(CPACK_PACKAGE_CONTACT "andrew@example.com")
-set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/andrewtimmins/riscos-access-server")
+set(CPACK_PACKAGE_CONTACT "https://github.com/andrewtimmins/sharefs-server/issues")
+set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/andrewtimmins/sharefs-server")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")
 
 # Debian-specific settings

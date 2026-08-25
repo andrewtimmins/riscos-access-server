@@ -1,6 +1,6 @@
 [Unit]
 Description=ShareFS Server
-Documentation=https://github.com/andrewtimmins/riscos-access-server
+Documentation=https://github.com/andrewtimmins/sharefs-server
 After=network-online.target
 Wants=network-online.target
 

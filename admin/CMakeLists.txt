@@ -77,7 +77,7 @@ endif()
 
 target_compile_definitions(sharefs-admin PRIVATE
     "SHAREFS_VERSION=\"${PROJECT_VERSION}\""
-    "SHAREFS_HOMEPAGE=\"https://github.com/andrewtimmins/riscos-access-server\""
+    "SHAREFS_HOMEPAGE=\"https://github.com/andrewtimmins/sharefs-server\""
 )
 
 target_include_directories(sharefs-admin PRIVATE

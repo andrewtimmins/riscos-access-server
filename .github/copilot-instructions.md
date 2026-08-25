@@ -7,7 +7,7 @@ ShareFS Server is an Acorn ShareFS-compatible file server in C, enabling modern 
 ## Project Structure
 
 ```
-riscos-access-server/
+sharefs-server/
 ├── src/                    # C server source code
 │   ├── main.c              # Entry point
 │   ├── server.c/h          # Main server loop

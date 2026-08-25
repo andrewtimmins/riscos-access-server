@@ -3,9 +3,7 @@
 **Author:** Andy Timmins  
 **License:** GPL-3.0-only
 
-ShareFS Server is a C11 implementation of an Acorn ShareFS-compatible server for Linux and Windows. It allows modern computers to share files with RISC OS machines over a local network using the native ShareFS protocol.
-
-> The git repository folder is still named `riscos-access-server` on GitHub; the Debian package is `sharefs-server`.
+ShareFS Server is a C11 implementation of an Acorn ShareFS-compatible server for Linux, macOS and Windows. It allows modern computers to share files with RISC OS machines over a local network using the native ShareFS protocol.
 
 ## Features
 
@@ -13,8 +11,8 @@ ShareFS Server is a C11 implementation of an Acorn ShareFS-compatible server for
 - **Freeway Broadcasts** - Automatic share discovery by RISC OS clients (port 32770)
 - **Access+ Authentication** - Password-protected shares (port 32771)
 - **RISC OS Filetype Preservation** - Via `,xxx` suffixes or automatic MIME mapping
-- **Admin GUI** - wxWidgets-based **ShareFS Admin** interface for easy configuration and server control
-- **Cross-Platform** - Native Linux (amd64, arm64) and Windows (x64, arm64) builds
+- **Admin GUI** - wxWidgets-based **ShareFS Admin** interface for easy configuration and server control, which can host the server itself
+- **Cross-Platform** - Native Linux (amd64, arm64), macOS (universal: Apple Silicon and Intel) and Windows (x64, arm64) builds
 
 ---
 
@@ -63,8 +61,8 @@ We provide scripts that automate the entire build process:
 
 ```bash
 # Clone the repository
-git clone https://github.com/andrewtimmins/riscos-access-server.git
-cd riscos-access-server
+git clone https://github.com/andrewtimmins/sharefs-server.git
+cd sharefs-server
 
 # Install build dependencies (Debian/Ubuntu)
 ./setup-build-env.sh
