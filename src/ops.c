@@ -565,6 +565,66 @@ static int path_within_share(const char *share_root, const char *host_path) {
          real_path[root_len] == '\\';
 }
 
+/*
+ * ★ Read-only shares, the way RISC OS does them.
+ *
+ * A RISC OS server does two things for a read-only shared disc: it announces
+ * the fact (the attribute descriptor in the Freeway registration, see
+ * broadcast.c) and it REFUSES anything that would change the disc, with the
+ * "shared disc is read only" error. The announcement is politeness - it lets
+ * the Filer show the share correctly - and the refusal is the control. Without
+ * the refusal, readonly in the configuration means nothing at all: any client
+ * that ignores the announcement, or never receives it, writes as it pleases.
+ *
+ * These two helpers answer "which share does this belong to, and is it read
+ * only" for the two kinds of request: one that names a RISC OS path, and one
+ * that carries a handle whose host path we already resolved.
+ */
+static uint32_t share_attrs_for_ro_path(const sfs_config *cfg,
+                                        const char *ro_path) {
+  const char *dot;
+  size_t share_len;
+  size_t i;
+
+  if (!cfg || !ro_path)
+    return 0;
+
+  dot = strchr(ro_path, '.');
+  share_len = dot ? (size_t)(dot - ro_path) : strlen(ro_path);
+
+  for (i = 0; i < cfg->share_count; ++i) {
+    const char *name = cfg->shares[i].name;
+
+    if (name && strlen(name) == share_len &&
+        strncasecmp(name, ro_path, share_len) == 0)
+      return cfg->shares[i].attributes;
+  }
+  return 0;
+}
+
+static uint32_t share_attrs_for_host_path(const sfs_config *cfg,
+                                          const char *host_path) {
+  size_t i;
+
+  if (!cfg || !host_path)
+    return 0;
+
+  for (i = 0; i < cfg->share_count; ++i) {
+    const char *root = cfg->shares[i].path;
+    size_t rlen;
+
+    if (!root)
+      continue;
+    rlen = strlen(root);
+    /* The share root itself, or something beneath it. Not a bare prefix test:
+       /srv/sharefs/Public must not match /srv/sharefs/PublicOther. */
+    if (strncmp(host_path, root, rlen) == 0 &&
+        (host_path[rlen] == '\0' || host_path[rlen] == '/'))
+      return cfg->shares[i].attributes;
+  }
+  return 0;
+}
+
 static int resolve_path(const sfs_config *cfg, const char *ro_path, char *out,
                         size_t out_sz) {
   if (!cfg || !ro_path || !out || out_sz == 0)
@@ -1196,6 +1256,15 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
 
     case 0x01: // ROPENIN (open for reading)
     case 0x02: // ROPENUP (open for read/write)
+      /* ★ ROPENIN falls through into this body, so the read-only test has to
+         name the code rather than sit above the label: refusing both would
+         stop a read-only share being READ, which is the one thing it is for. */
+      if (code == 0x02 &&
+          (share_attrs_for_ro_path(cfg, path) & SFS_ATTR_READONLY)) {
+        sfs_log(SFS_LOG_DEBUG, "ROPENUP refused: read-only share");
+        send_err_pkt(net, rid, EROFS, addr, port);
+        break;
+      }
     {
       if (resolve_path(cfg, path, host_path, sizeof(host_path)) != 0) {
         // If path is empty, they're asking about the share itself
@@ -1321,6 +1390,13 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     }
 
     case 0x04: // RCREATE
+      /* A read-only share refuses anything that would change it, which is
+         what makes the attribute mean something. */
+      if (share_attrs_for_ro_path(cfg, path) & SFS_ATTR_READONLY) {
+        sfs_log(SFS_LOG_DEBUG, "%s refused: read-only share", "RCREATE");
+        send_err_pkt(net, rid, EROFS, addr, port);
+        break;
+      }
     {
       if (resolve_path(cfg, path, host_path, sizeof(host_path)) != 0) {
         send_err_pkt(net, rid, ENOENT, addr, port);
@@ -1375,6 +1451,13 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     }
 
     case 0x05: // RCREATEDIR
+      /* A read-only share refuses anything that would change it, which is
+         what makes the attribute mean something. */
+      if (share_attrs_for_ro_path(cfg, path) & SFS_ATTR_READONLY) {
+        sfs_log(SFS_LOG_DEBUG, "%s refused: read-only share", "RCREATEDIR");
+        send_err_pkt(net, rid, EROFS, addr, port);
+        break;
+      }
     {
       if (resolve_path(cfg, path, host_path, sizeof(host_path)) != 0) {
         send_err_pkt(net, rid, ENOENT, addr, port);
@@ -1403,6 +1486,13 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     }
 
     case 0x06: // RDELETE
+      /* A read-only share refuses anything that would change it, which is
+         what makes the attribute mean something. */
+      if (share_attrs_for_ro_path(cfg, path) & SFS_ATTR_READONLY) {
+        sfs_log(SFS_LOG_DEBUG, "%s refused: read-only share", "RDELETE");
+        send_err_pkt(net, rid, EROFS, addr, port);
+        break;
+      }
     {
       if (resolve_path(cfg, path, host_path, sizeof(host_path)) != 0) {
         send_err_pkt(net, rid, ENOENT, addr, port);
@@ -1434,6 +1524,13 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     }
 
     case 0x07: // RACCESS (set attributes)
+      /* A read-only share refuses anything that would change it, which is
+         what makes the attribute mean something. */
+      if (share_attrs_for_ro_path(cfg, path) & SFS_ATTR_READONLY) {
+        sfs_log(SFS_LOG_DEBUG, "%s refused: read-only share", "RACCESS");
+        send_err_pkt(net, rid, EROFS, addr, port);
+        break;
+      }
     {
       // Format: cmd(1) + rid(3) + code(4) + attrs(4) + handle(4) + path...
       if (len < 16) {
@@ -1646,6 +1743,20 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
 
     case 0x0c: // RWRITE - write file data (initiates w/d protocol)
     {
+      /* Second line of defence. Getting here needs a handle, and a handle
+         needs an open that the read-only test above already refuses - but a
+         client that opened for reading and then asked to write should be told
+         no by the share, not only by the open mode. */
+      {
+        sfs_handle *rw = NULL;
+
+        if (sfs_handles_get(handles, (int)handle, &rw) == 0 && rw && rw->path &&
+            (share_attrs_for_host_path(cfg, rw->path) & SFS_ATTR_READONLY)) {
+          sfs_log(SFS_LOG_DEBUG, "RWRITE refused: read-only share");
+          send_err_pkt(net, rid, EROFS, addr, port);
+          break;
+        }
+      }
       // Format: cmd(1) + rid(3) + code(4) + handle(4) + offset(4) + amount(4)
       // This is a request to receive 'amount' bytes starting at 'offset'
       // We need to send 'w' packets to request data, then receive 'd' packets
@@ -1730,6 +1841,20 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     }
 
     case 0x0f: // RSETLENGTH - set file length
+      /* Second line of defence. Getting here needs a handle, and a handle
+         needs an open that the read-only test above already refuses - but a
+         client that opened for reading and then asked to write should be told
+         no by the share, not only by the open mode. */
+      {
+        sfs_handle *rw = NULL;
+
+        if (sfs_handles_get(handles, (int)handle, &rw) == 0 && rw && rw->path &&
+            (share_attrs_for_host_path(cfg, rw->path) & SFS_ATTR_READONLY)) {
+          sfs_log(SFS_LOG_DEBUG, "RSETLENGTH refused: read-only share");
+          send_err_pkt(net, rid, EROFS, addr, port);
+          break;
+        }
+      }
     {
       // Format: cmd(1) + rid(3) + code(4) + handle(4) + length(4) = 16 bytes
       if (len < 16) {
@@ -1760,6 +1885,13 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     }
 
     case 0x10: // RSETINFO - set load/exec addresses (filetype + date)
+      /* A read-only share refuses anything that would change it, which is
+         what makes the attribute mean something. */
+      if (share_attrs_for_ro_path(cfg, path) & SFS_ATTR_READONLY) {
+        sfs_log(SFS_LOG_DEBUG, "%s refused: read-only share", "RSETINFO");
+        send_err_pkt(net, rid, EROFS, addr, port);
+        break;
+      }
     {
       // Format: cmd(1) + rid(3) + code(4) + handle(4) + load(4) + exec(4) = 20
       // bytes
@@ -1906,6 +2038,13 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     }
 
     case 0x09: // RRENAME
+      /* A read-only share refuses anything that would change it, which is
+         what makes the attribute mean something. */
+      if (share_attrs_for_ro_path(cfg, path) & SFS_ATTR_READONLY) {
+        sfs_log(SFS_LOG_DEBUG, "%s refused: read-only share", "RRENAME");
+        send_err_pkt(net, rid, EROFS, addr, port);
+        break;
+      }
     {
       // Format: cmd(1) + rid(3) + code(4) + new_len(4) + handle(4) + old_path
       // Client then sends a 'D' packet carrying the new name of length new_len
@@ -1975,6 +2114,20 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     }
 
     case 0x0e: // RENSURE - ensure file size allocated
+      /* Second line of defence. Getting here needs a handle, and a handle
+         needs an open that the read-only test above already refuses - but a
+         client that opened for reading and then asked to write should be told
+         no by the share, not only by the open mode. */
+      {
+        sfs_handle *rw = NULL;
+
+        if (sfs_handles_get(handles, (int)handle, &rw) == 0 && rw && rw->path &&
+            (share_attrs_for_host_path(cfg, rw->path) & SFS_ATTR_READONLY)) {
+          sfs_log(SFS_LOG_DEBUG, "RENSURE refused: read-only share");
+          send_err_pkt(net, rid, EROFS, addr, port);
+          break;
+        }
+      }
     {
       // Format: cmd(1) + rid(3) + code(4) + handle(4) + size(4) = 16 bytes
       if (len < 16) {
@@ -2076,6 +2229,20 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     }
 
     case 0x14: // RZERO - write zeros to file
+      /* Second line of defence. Getting here needs a handle, and a handle
+         needs an open that the read-only test above already refuses - but a
+         client that opened for reading and then asked to write should be told
+         no by the share, not only by the open mode. */
+      {
+        sfs_handle *rw = NULL;
+
+        if (sfs_handles_get(handles, (int)handle, &rw) == 0 && rw && rw->path &&
+            (share_attrs_for_host_path(cfg, rw->path) & SFS_ATTR_READONLY)) {
+          sfs_log(SFS_LOG_DEBUG, "RZERO refused: read-only share");
+          send_err_pkt(net, rid, EROFS, addr, port);
+          break;
+        }
+      }
     {
       // Format: cmd(1) + rid(3) + code(4) + handle(4) + offset(4) + length(4) =
       // 20 bytes
@@ -2451,6 +2618,18 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
 
     case 0x0c: // RWRITE (a-cmd format, initiates w/d protocol)
     {
+      /* The same read-only refusal as the other dispatcher. hid is this
+         block's handle id. */
+      {
+        sfs_handle *rw = NULL;
+
+        if (sfs_handles_get(handles, hid, &rw) == 0 && rw && rw->path &&
+            (share_attrs_for_host_path(cfg, rw->path) & SFS_ATTR_READONLY)) {
+          sfs_log(SFS_LOG_DEBUG, "RWRITE refused: read-only share");
+          send_err_pkt(net, rid, EROFS, addr, port);
+          break;
+        }
+      }
       if (len < 20) {
         send_err_pkt(net, rid, EINVAL, addr, port);
         break;
@@ -2521,6 +2700,18 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     }
 
     case 0x0e: // RENSURE - ensure file size
+      /* The same read-only refusal as the other dispatcher. hid is this
+         block's handle id. */
+      {
+        sfs_handle *rw = NULL;
+
+        if (sfs_handles_get(handles, hid, &rw) == 0 && rw && rw->path &&
+            (share_attrs_for_host_path(cfg, rw->path) & SFS_ATTR_READONLY)) {
+          sfs_log(SFS_LOG_DEBUG, "RENSURE refused: read-only share");
+          send_err_pkt(net, rid, EROFS, addr, port);
+          break;
+        }
+      }
     {
       if (len < 16) {
         send_err_pkt(net, rid, EINVAL, addr, port);
@@ -2554,6 +2745,18 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     }
 
     case 0x0f: // RSETLENGTH
+      /* The same read-only refusal as the other dispatcher. hid is this
+         block's handle id. */
+      {
+        sfs_handle *rw = NULL;
+
+        if (sfs_handles_get(handles, hid, &rw) == 0 && rw && rw->path &&
+            (share_attrs_for_host_path(cfg, rw->path) & SFS_ATTR_READONLY)) {
+          sfs_log(SFS_LOG_DEBUG, "RSETLENGTH refused: read-only share");
+          send_err_pkt(net, rid, EROFS, addr, port);
+          break;
+        }
+      }
     {
       if (len < 16) {
         send_err_pkt(net, rid, EINVAL, addr, port);
@@ -2580,6 +2783,18 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     }
 
     case 0x10: // RSETINFO (set load/exec addresses)
+      /* The same read-only refusal as the other dispatcher. hid is this
+         block's handle id. */
+      {
+        sfs_handle *rw = NULL;
+
+        if (sfs_handles_get(handles, hid, &rw) == 0 && rw && rw->path &&
+            (share_attrs_for_host_path(cfg, rw->path) & SFS_ATTR_READONLY)) {
+          sfs_log(SFS_LOG_DEBUG, "RSETINFO refused: read-only share");
+          send_err_pkt(net, rid, EROFS, addr, port);
+          break;
+        }
+      }
     {
       if (len < 20) {
         send_err_pkt(net, rid, EINVAL, addr, port);
@@ -2646,6 +2861,18 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
     }
 
     case 0x14: // RZERO - write zeros
+      /* The same read-only refusal as the other dispatcher. hid is this
+         block's handle id. */
+      {
+        sfs_handle *rw = NULL;
+
+        if (sfs_handles_get(handles, hid, &rw) == 0 && rw && rw->path &&
+            (share_attrs_for_host_path(cfg, rw->path) & SFS_ATTR_READONLY)) {
+          sfs_log(SFS_LOG_DEBUG, "RZERO refused: read-only share");
+          send_err_pkt(net, rid, EROFS, addr, port);
+          break;
+        }
+      }
     {
       if (len < 20) {
         send_err_pkt(net, rid, EINVAL, addr, port);
