@@ -11,7 +11,8 @@ This document is a low-level, implement-from-scratch reference. It defines field
   - 49171: File RPC (all commands below).
 - Strings: zero-terminated unless stated otherwise.
 - Read chunk size: **8192 bytes**, and it is not a free choice. A reading client acknowledges with the amount it has contiguously received plus a **bitmask** of the chunks it holds beyond that, and a chunk's bit is its offset divided by the chunk size, so the sizes must agree. Writes are driven by the client and follow its own sizing.
-- Read window: the client accepts up to **16 chunks** ahead of what it has acknowledged (its own limit is 32), so a server should send every chunk in that window the client does not already hold rather than one per acknowledgement. Sending one costs a round trip per chunk, which over a wide-area link is the difference between a usable share and an unusable one.
+- Read window: **2 chunks** ahead of what the client has acknowledged, so 16KB in flight. A server should send every chunk in that window the client does not already hold, rather than one per acknowledgement: one costs a round trip per chunk, which over a wide-area link is the difference between a usable share and an unusable one.
+- Do not exceed it. The protocol allows up to 32 and some client builds use 16, but the ordinary module tracks 2 and **discards anything beyond its window**. Overshooting also bursts the guest's network stack - an 8KB chunk is six IP fragments, so sixteen chunks is ninety-six frames at once - and the symptom is that small files transfer correctly while larger ones fail.
 - RID: 3-byte request ID echoed in all replies for that transaction.
 
 ## 2) Time, Filetype, Load/Exec
