@@ -221,7 +221,26 @@ static int safe_rename_cross(const char *oldp, const char *newp) {
 
 // Pending read transfer state
 #define MAX_PENDING_READS 32
-#define READ_CHUNK_SIZE 1024
+/*
+ * ★ The chunk size is not ours to choose, and the window is the whole point.
+ *
+ * A reading client acknowledges with the amount it has contiguously received
+ * and a BITMASK of the chunks it has beyond that, and it will accept a window
+ * of chunks ahead of the acknowledged point. The bit for a chunk is its offset
+ * divided by the chunk size, so the size has to be the one the client uses -
+ * 8192 over an IP transport - or several of our packets map onto one of its
+ * bits and its accounting is wrong.
+ *
+ * This used to be 1024 with one chunk in flight, which is why writes were quick
+ * and reads were not: every kilobyte cost a full round trip to the server. Over
+ * the internet that is about a hundredth of what the protocol allows.
+ */
+#define READ_CHUNK_SIZE 8192
+
+/* Chunks the client will accept ahead of what it has acknowledged. Its own
+   limit is 32; 16 is what it uses over IP, and there is nothing to gain by
+   guessing higher than the other end. */
+#define READ_WINDOW_CHUNKS 16
 
 #define MAX_CLIENTS 128
 
@@ -286,7 +305,9 @@ static void broadcast_deadhandles(sfs_net *net, sfs_handle_table *handles) {
 
 // States for RREAD ping-pong protocol
 #define SFS_READ_STATE_WAIT_DATA_ACK 0
-#define SFS_READ_STATE_WAIT_STATUS_ACK 1
+/* There is no second state any more. Data goes out on every acknowledgement,
+   as much of the window as the client is missing, so there is nothing to wait
+   for in between. */
 
 typedef struct {
   int active;
@@ -819,7 +840,7 @@ static void send_d_pkt_with_offset(sfs_net *net, const unsigned char *rid,
 
   struct {
     unsigned char h[8];
-    unsigned char p[2048];
+    unsigned char p[READ_CHUNK_SIZE];
   } pkt;
   if (dlen > sizeof(pkt.p))
     dlen = sizeof(pkt.p);
@@ -1574,29 +1595,43 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       pr->port = port;
       pr->started_at = time(NULL);
 
-      // Send first chunk
-      uint32_t amount = (rlen < READ_CHUNK_SIZE) ? rlen : READ_CHUNK_SIZE;
-
-      if (lseek(h->fd, (off_t)pr->current_pos, SEEK_SET) < 0) {
-        free_pending_read(pr);
-        send_err_pkt(net, rid, errno, addr, port);
-        break;
-      }
-
+      /* The first window's worth, not the first chunk: the client accepts a
+         window from the outset, and starting with one chunk spends a round
+         trip before the transfer gets going. */
       unsigned char data[READ_CHUNK_SIZE];
-      ssize_t n = read(h->fd, data, amount);
-      if (n < 0) {
-        free_pending_read(pr);
-        send_err_pkt(net, rid, errno, addr, port);
-        break;
+      ssize_t n = 0;
+      int w;
+
+      for (w = 0; w < READ_WINDOW_CHUNKS; w++) {
+        uint32_t amount = pr->end_pos - pr->current_pos;
+
+        if (pr->current_pos >= pr->end_pos)
+          break;
+        if (amount > READ_CHUNK_SIZE)
+          amount = READ_CHUNK_SIZE;
+
+        if (lseek(h->fd, (off_t)pr->current_pos, SEEK_SET) < 0) {
+          free_pending_read(pr);
+          send_err_pkt(net, rid, errno, addr, port);
+          pr = NULL;
+          break;
+        }
+        n = read(h->fd, data, amount);
+        if (n < 0) {
+          free_pending_read(pr);
+          send_err_pkt(net, rid, errno, addr, port);
+          pr = NULL;
+          break;
+        }
+        if (n == 0)
+          break;
+
+        send_d_pkt_with_offset(net, rid, pr->current_pos - pr->start_pos, data,
+                               (size_t)n, addr, port);
+        pr->current_pos += (uint32_t)n;
       }
-
-      // Send D packet with offset relative to start (should be 0 for first
-      // chunk)
-      send_d_pkt_with_offset(net, rid, pr->current_pos - pr->start_pos, data,
-                             (size_t)n, addr, port);
-
-      pr->current_pos += (uint32_t)n;
+      if (!pr)
+        break;
 
       // If completed immediately (small file), send R packet too
       if (pr->current_pos >= pr->end_pos) {
@@ -2365,29 +2400,43 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       pr->addr[sizeof(pr->addr) - 1] = '\0';
       pr->port = port;
 
-      // Send first chunk
-      uint32_t amount = (rlen < READ_CHUNK_SIZE) ? rlen : READ_CHUNK_SIZE;
-
-      if (lseek(h->fd, (off_t)pr->current_pos, SEEK_SET) < 0) {
-        free_pending_read(pr);
-        send_err_pkt(net, rid, errno, addr, port);
-        break;
-      }
-
+      /* The first window's worth, not the first chunk: the client accepts a
+         window from the outset, and starting with one chunk spends a round
+         trip before the transfer gets going. */
       unsigned char data[READ_CHUNK_SIZE];
-      ssize_t n = read(h->fd, data, amount);
-      if (n < 0) {
-        free_pending_read(pr);
-        send_err_pkt(net, rid, errno, addr, port);
-        break;
+      ssize_t n = 0;
+      int w;
+
+      for (w = 0; w < READ_WINDOW_CHUNKS; w++) {
+        uint32_t amount = pr->end_pos - pr->current_pos;
+
+        if (pr->current_pos >= pr->end_pos)
+          break;
+        if (amount > READ_CHUNK_SIZE)
+          amount = READ_CHUNK_SIZE;
+
+        if (lseek(h->fd, (off_t)pr->current_pos, SEEK_SET) < 0) {
+          free_pending_read(pr);
+          send_err_pkt(net, rid, errno, addr, port);
+          pr = NULL;
+          break;
+        }
+        n = read(h->fd, data, amount);
+        if (n < 0) {
+          free_pending_read(pr);
+          send_err_pkt(net, rid, errno, addr, port);
+          pr = NULL;
+          break;
+        }
+        if (n == 0)
+          break;
+
+        send_d_pkt_with_offset(net, rid, pr->current_pos - pr->start_pos, data,
+                               (size_t)n, addr, port);
+        pr->current_pos += (uint32_t)n;
       }
-
-      // Send D packet with offset relative to start (should be 0 for first
-      // chunk)
-      send_d_pkt_with_offset(net, rid, pr->current_pos - pr->start_pos, data,
-                             (size_t)n, addr, port);
-
-      pr->current_pos += (uint32_t)n;
+      if (!pr)
+        break;
 
       // If completed immediately (small file), send R packet too
       if (pr->current_pos >= pr->end_pos) {
@@ -3003,85 +3052,78 @@ int sfs_rpc_handle_r(const unsigned char *buf, size_t len, const char *addr,
     return 0;
   }
 
-  if (pr->state == SFS_READ_STATE_WAIT_DATA_ACK) {
-    // We received ACK for the data packet.
-    sfs_log(SFS_LOG_DEBUG, "RREAD: Done Data %u/%u. Sending Status.",
-            pr->current_pos - pr->start_pos, pr->end_pos - pr->start_pos);
+  /*
+   * ★ One acknowledgement, as many chunks as the window allows.
+   *
+   * The client tells us two things: how much it has contiguously received, and
+   * a bitmask of the chunks it holds beyond that. Everything in the window that
+   * it does not hold is sent now, without waiting - that is what the window is
+   * for, and sending one chunk per acknowledgement is what made reads crawl.
+   *
+   * Both words are relative to the start of the transfer. A short
+   * acknowledgement carries neither, which is treated as "nothing beyond what
+   * we last sent", so an older client that only ever acks still progresses.
+   */
+  uint32_t done = pr->current_pos - pr->start_pos;
+  uint32_t bits = 0;
 
-    // Send Status Packet (D header with current offset, no data)
-    send_d_pkt_with_offset(net, rid, pr->current_pos - pr->start_pos, NULL, 0,
-                           addr, port);
+  if (len >= 12) {
+    done = read_u32(buf + 4);
+    bits = read_u32(buf + 8);
+  }
 
-    if (pr->current_pos >= pr->end_pos) {
-      sfs_log(SFS_LOG_DEBUG, "RREAD: Transfer Complete. Sending R.");
-      // Transfer complete
-      unsigned char reply[8];
-      write_u32(reply, pr->end_pos - pr->start_pos);
-      write_u32(reply + 4, pr->end_pos);
-      send_r_pkt(net, rid, reply, sizeof(reply), addr, port);
-      free_pending_read(pr);
-    } else {
-      // Wait for client to request next chunk
-      pr->state = SFS_READ_STATE_WAIT_STATUS_ACK;
-    }
-  } else if (pr->state == SFS_READ_STATE_WAIT_STATUS_ACK) {
-    // We received ACK for status packet.
-    // Client sends next requested range in this packet.
-    // Format: r + rid + pos(4) + end(4) (relative to start)
-    if (len < 12) {
-      sfs_log(SFS_LOG_DEBUG, "r-pkt: short status ack");
-      free_pending_read(pr);
-      return 0;
-    }
+  if (pr->start_pos + done >= pr->end_pos) {
+    unsigned char reply[8];
 
-    uint32_t rel_pos = read_u32(buf + 4);
-    uint32_t rel_end = read_u32(buf + 8);
+    sfs_log(SFS_LOG_DEBUG, "RREAD: complete, %u bytes. Sending R.",
+            pr->end_pos - pr->start_pos);
+    write_u32(reply, pr->end_pos - pr->start_pos);
+    write_u32(reply + 4, pr->end_pos);
+    send_r_pkt(net, rid, reply, sizeof(reply), addr, port);
+    free_pending_read(pr);
+    return 0;
+  }
 
-    sfs_log(SFS_LOG_DEBUG, "RREAD: Client Request: RelPos=%u RelEnd=%u",
-            rel_pos, rel_end);
-
-    uint32_t next_pos = pr->start_pos + rel_pos;
-    uint32_t chunk_end = pr->start_pos + rel_end;
-
-    // Sanity check
-    if (next_pos >= pr->end_pos) {
-      sfs_log(SFS_LOG_DEBUG, "RREAD: Client requested beyond end.");
-      free_pending_read(pr);
-      return 0;
-    }
-
-    // Update current position to what client asked for
-    pr->current_pos = next_pos;
-
-    // Determine chunk size
-    uint32_t amount = chunk_end - next_pos;
-    if (amount > READ_CHUNK_SIZE)
-      amount = READ_CHUNK_SIZE;
-    // Also cap at total file end
-    if (pr->current_pos + amount > pr->end_pos)
-      amount = pr->end_pos - pr->current_pos;
-
-    sfs_log(SFS_LOG_DEBUG, "RREAD: Sending Data: Offset=%u Len=%u",
-            pr->current_pos - pr->start_pos, amount);
-
-    // Read next chunk
-    if (lseek(h->fd, (off_t)pr->current_pos, SEEK_SET) < 0) {
-      free_pending_read(pr);
-      return 0;
-    }
-
+  {
     unsigned char data[READ_CHUNK_SIZE];
-    ssize_t n = read(h->fd, data, amount);
-    if (n < 0) {
-      free_pending_read(pr);
-      return 0;
+    int sent = 0;
+    int i;
+
+    for (i = 0; i < READ_WINDOW_CHUNKS; i++) {
+      uint32_t offset, absolute, amount;
+      ssize_t n;
+
+      if (bits & (1u << i))
+        continue; /* the client already has this one */
+
+      offset = done + (uint32_t)i * READ_CHUNK_SIZE;
+      absolute = pr->start_pos + offset;
+      if (absolute >= pr->end_pos)
+        break;
+
+      amount = pr->end_pos - absolute;
+      if (amount > READ_CHUNK_SIZE)
+        amount = READ_CHUNK_SIZE;
+
+      if (lseek(h->fd, (off_t)absolute, SEEK_SET) < 0)
+        break;
+      n = read(h->fd, data, amount);
+      if (n <= 0)
+        break;
+
+      send_d_pkt_with_offset(net, rid, offset, data, (size_t)n, addr, port);
+      sent++;
+      if (absolute + (uint32_t)n > pr->current_pos)
+        pr->current_pos = absolute + (uint32_t)n;
     }
 
-    // Send Data Packet
-    send_d_pkt_with_offset(net, rid, pr->current_pos - pr->start_pos, data,
-                           (size_t)n, addr, port);
+    sfs_log(SFS_LOG_DEBUG,
+            "RREAD: ack done=%u bits=%08x -> sent %d chunk(s), position %u/%u",
+            done, bits, sent, pr->current_pos - pr->start_pos,
+            pr->end_pos - pr->start_pos);
 
-    pr->current_pos += (uint32_t)n;
+    /* Nothing to send and not finished means the window is full of chunks the
+       client says it has, so the next acknowledgement will move it along. */
     pr->state = SFS_READ_STATE_WAIT_DATA_ACK;
   }
 
