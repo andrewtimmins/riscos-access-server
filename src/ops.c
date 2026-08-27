@@ -237,10 +237,20 @@ static int safe_rename_cross(const char *oldp, const char *newp) {
  */
 #define READ_CHUNK_SIZE 8192
 
-/* Chunks the client will accept ahead of what it has acknowledged. Its own
-   limit is 32; 16 is what it uses over IP, and there is nothing to gain by
-   guessing higher than the other end. */
-#define READ_WINDOW_CHUNKS 16
+/*
+ * ★ Chunks the client will accept ahead of what it has acknowledged: TWO.
+ *
+ * The protocol permits up to 32 and a client can be built with 16, but the
+ * ordinary module uses 2, and going beyond what the other end tracks is worse
+ * than useless: it discards anything past its window, and the guest's network
+ * stack is handed a burst it has no room for. Sixteen chunks is 128KB in one
+ * go, as six fragments per chunk - which is why a small file came back fine
+ * and anything larger broke.
+ *
+ * Two chunks is 16KB in flight, still sixteen times what one-at-a-time
+ * managed, and it is what the client is actually prepared to receive.
+ */
+#define READ_WINDOW_CHUNKS 2
 
 #define MAX_CLIENTS 128
 
