@@ -1167,7 +1167,20 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         break;
       }
       struct stat st;
-      if (stat(host_path, &st) != 0 || !S_ISDIR(st.st_mode)) {
+      /* ★ Two different answers, not one.
+       *
+       * A client copying an object into a share probes the destination first.
+       * When it is not there the honest reply is ENOENT, which says "nothing
+       * here, go ahead"; ENOTDIR says "something IS here and it is not a
+       * directory", so the client reports a hard error and gives up. Both
+       * cases used to send ENOTDIR, which is why copying an application
+       * directory into a share failed with an error rather than creating it.
+       */
+      if (stat(host_path, &st) != 0) {
+        send_err_pkt(net, rid, errno ? errno : ENOENT, addr, port);
+        break;
+      }
+      if (!S_ISDIR(st.st_mode)) {
         send_err_pkt(net, rid, ENOTDIR, addr, port);
         break;
       }
@@ -2034,9 +2047,15 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
       }
       sfs_log(SFS_LOG_DEBUG, "ROPENDIR: host_path='%s'", host_path);
       struct stat st;
-      if (stat(host_path, &st) != 0 || !S_ISDIR(st.st_mode)) {
-        sfs_log(SFS_LOG_DEBUG, "ROPENDIR: stat failed or not a dir: errno=%d",
-                errno);
+      /* The same distinction as the A-command handler above, and for the same
+         reason: not there is ENOENT, there but not a directory is ENOTDIR. */
+      if (stat(host_path, &st) != 0) {
+        sfs_log(SFS_LOG_DEBUG, "ROPENDIR: stat failed: errno=%d", errno);
+        send_err_pkt(net, rid, errno ? errno : ENOENT, addr, port);
+        break;
+      }
+      if (!S_ISDIR(st.st_mode)) {
+        sfs_log(SFS_LOG_DEBUG, "ROPENDIR: exists but is not a directory");
         send_err_pkt(net, rid, ENOTDIR, addr, port);
         break;
       }
