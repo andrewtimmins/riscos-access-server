@@ -10,7 +10,8 @@ This document is a low-level, implement-from-scratch reference. It defines field
   - 32771: Access+ authentication / secure discovery.
   - 49171: File RPC (all commands below).
 - Strings: zero-terminated unless stated otherwise.
-- Default chunk size: 1024 bytes for reads and writes.
+- Read chunk size: **8192 bytes**, and it is not a free choice. A reading client acknowledges with the amount it has contiguously received plus a **bitmask** of the chunks it holds beyond that, and a chunk's bit is its offset divided by the chunk size, so the sizes must agree. Writes are driven by the client and follow its own sizing.
+- Read window: the client accepts up to **16 chunks** ahead of what it has acknowledged (its own limit is 32), so a server should send every chunk in that window the client does not already hold rather than one per acknowledgement. Sending one costs a round trip per chunk, which over a wide-area link is the difference between a usable share and an unusable one.
 - RID: 3-byte request ID echoed in all replies for that transaction.
 
 ## 2) Time, Filetype, Load/Exec
@@ -141,6 +142,11 @@ Hex example (rename `BugReport,fff` → `BugReport_ass` 12 bytes):
 ## 9) Authentication (Access+, 32771)
 - PIN derivation: uppercase ASCII; digit → 1..10, letter → 11..36; folded per char: `pin = pin*37 + val`.
 - Shares marked `protected` require a successful Access+ exchange before path-based RPCs proceed. (Full Access+ frame layout is outside this file; behavior matches Acorn Access.)
+
+### RREAD acknowledgement (`r`)
+- Layout: `r | rid[3] | done(u32 le) | bits(u32 le)`.
+- `done` is how much of the transfer the client has contiguously received; `bits` is a bitmask of the chunks it holds beyond that, bit *n* meaning the chunk at `done + n * 8192`.
+- Both are relative to the start of the transfer. A shorter acknowledgement carries neither.
 
 ## 10) Error Semantics
 - An `E` reply carries a **RISC OS error block**: a u32 le error number followed by a NUL-terminated message. The client passes it straight back to the operating system as an error, so the message is not optional — without one the OS is shown whatever follows the number in the client's buffer, and the error appears as rubbish.
