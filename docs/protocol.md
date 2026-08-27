@@ -10,7 +10,8 @@ This document is a low-level, implement-from-scratch reference. It defines field
   - 32771: Access+ authentication / secure discovery.
   - 49171: File RPC (all commands below).
 - Strings: zero-terminated unless stated otherwise.
-- Default chunk size: 1024 bytes for reads and writes.
+- Read chunk size: **8192 bytes**, and it is not a free choice. A reading client acknowledges with the amount it has contiguously received plus a **bitmask** of the chunks it holds beyond that, and a chunk's bit is its offset divided by the chunk size, so the sizes must agree. Writes are driven by the client and follow its own sizing.
+- Read window: the client accepts up to **16 chunks** ahead of what it has acknowledged (its own limit is 32), so a server should send every chunk in that window the client does not already hold rather than one per acknowledgement. Sending one costs a round trip per chunk, which over a wide-area link is the difference between a usable share and an unusable one.
 - RID: 3-byte request ID echoed in all replies for that transaction.
 
 ## 2) Time, Filetype, Load/Exec
@@ -55,7 +56,7 @@ This document is a low-level, implement-from-scratch reference. It defines field
 - B-command layout mirrors A but uses leading `B`.
 - Replies:
   - Success: `R | rid[3] | payload...`
-  - Error:   `E | rid[3] | errno(u32 le)`
+  - Error:   `E | rid[3] | errnum(u32 le) | message(NUL-terminated)` — total `9 + strlen(message)`
 
 ### FileDesc Structure (20 bytes, le)
 `type(u32) | load(u32) | exec(u32) | length(u32) | attrs(u32)`
@@ -142,9 +143,26 @@ Hex example (rename `BugReport,fff` → `BugReport_ass` 12 bytes):
 - PIN derivation: uppercase ASCII; digit → 1..10, letter → 11..36; folded per char: `pin = pin*37 + val`.
 - Shares marked `protected` require a successful Access+ exchange before path-based RPCs proceed. (Full Access+ frame layout is outside this file; behavior matches Acorn Access.)
 
+### RREAD acknowledgement (`r`)
+- Layout: `r | rid[3] | done(u32 le) | bits(u32 le)`.
+- `done` is how much of the transfer the client has contiguously received; `bits` is a bitmask of the chunks it holds beyond that, bit *n* meaning the chunk at `done + n * 8192`.
+- Both are relative to the start of the transfer. A shorter acknowledgement carries neither.
+
 ## 10) Error Semantics
-- `E` replies carry errno as u32 le. Windows errors are mapped to POSIX-style errno.
-- Common codes: ENOENT, EACCES, EBUSY, EINVAL, EBADF, EIO, ENOSYS.
+- An `E` reply carries a **RISC OS error block**: a u32 le error number followed by a NUL-terminated message. The client passes it straight back to the operating system as an error, so the message is not optional — without one the OS is shown whatever follows the number in the client's buffer, and the error appears as rubbish.
+- The **number must be one RISC OS recognises**, not a POSIX errno. In particular the client compares against its own "not found" number when deciding whether an object exists, so a copy into a share depends on getting that one right: answer it with an errno and the client raises an error instead of creating the object.
+- Numbers used here:
+
+  | Meaning | Number | Space |
+  | --- | --- | --- |
+  | Not found | `0x100D6` | standard filing system |
+  | Bad parameters | `0x100DC` | standard filing system |
+  | End of file | `0x100DF` | standard filing system |
+  | Not a directory | `0x14CC5` | remote filing system (0x100 + FS number 76, shifted, + `0xC5`) |
+  | Access violation | `0x14CBD` | remote filing system |
+  | Read only | `0x14C4C` | remote filing system |
+
+- POSIX errno values from the host are mapped onto those before the reply is built (`riscos_error_for` in `src/ops.c`); anything unmapped is sent as bad parameters with `strerror` text, so it is at least readable.
 
 ## 11) Limits and Defaults
 - Chunk size: 1024 bytes for RREAD/RWRITE.
