@@ -651,12 +651,110 @@ static int find_file_with_suffix(const char *base_path, char *out,
   return -1;
 }
 
+/*
+ * ★ An E reply is a RISC OS error block, not an errno.
+ *
+ * The client copies the payload straight back to the OS as an error: a 32-bit
+ * RISC OS error NUMBER followed by a NUL-TERMINATED MESSAGE. Two consequences,
+ * both of which were wrong here:
+ *
+ *   - With no message, the client hands the OS whatever follows the number in
+ *     its own receive buffer. That is where the row of accented y characters
+ *     came from: 0xFF filler read as a string. Every error the server reported
+ *     was unreadable, not just the interesting ones.
+ *
+ *   - The number has to be one the client knows. It compares against its own
+ *     "not found" number when deciding whether an object exists, so a POSIX
+ *     errno means nothing to it: copying anything into a share failed, because
+ *     the client asked "is it there?", got a number it could not interpret, and
+ *     raised an error instead of creating the object.
+ *
+ * The numbers below are the ones the RISC OS side uses. 0x100Dx are the
+ * standard filing-system errors; the 0x14Cxx ones are in the remote filing
+ * system's own space (0x100 + its filing system number 76, shifted, plus the
+ * classic error byte).
+ */
+#define SFS_RO_ERR_NOT_FOUND 0x100D6
+#define SFS_RO_ERR_BAD_PARM 0x100DC
+#define SFS_RO_ERR_EOF 0x100DF
+#define SFS_RO_ERR_NOT_DIR 0x14CC5
+#define SFS_RO_ERR_ACCESS 0x14CBD
+#define SFS_RO_ERR_READONLY 0x14C4C
+
+static void riscos_error_for(int code, uint32_t *errnum, const char **message) {
+  switch (code) {
+  case ENOENT:
+    *errnum = SFS_RO_ERR_NOT_FOUND;
+    *message = "Not found";
+    return;
+  case ENOTDIR:
+    *errnum = SFS_RO_ERR_NOT_DIR;
+    *message = "Not a directory";
+    return;
+  case EISDIR:
+    *errnum = SFS_RO_ERR_NOT_DIR;
+    *message = "Is a directory";
+    return;
+  case EACCES:
+  case EPERM:
+    *errnum = SFS_RO_ERR_ACCESS;
+    *message = "Access violation";
+    return;
+  case EROFS:
+    *errnum = SFS_RO_ERR_READONLY;
+    *message = "Disc is read only";
+    return;
+  case EEXIST:
+    *errnum = SFS_RO_ERR_BAD_PARM;
+    *message = "Already exists";
+    return;
+  case ENOSPC:
+    *errnum = SFS_RO_ERR_BAD_PARM;
+    *message = "Disc full";
+    return;
+  case EINVAL:
+  case EBADF:
+    *errnum = SFS_RO_ERR_BAD_PARM;
+    *message = "Bad parameters";
+    return;
+  default:
+    /* Anything unmapped still has to arrive as a readable error rather than as
+       a number the client will render as rubbish. */
+    *errnum = SFS_RO_ERR_BAD_PARM;
+    *message = strerror(code);
+    return;
+  }
+}
+
 static void send_err_pkt(sfs_net *net, const unsigned char *rid, int code,
                          const char *addr, unsigned short port) {
-  unsigned char pkt[8] = {'E', rid[0], rid[1], rid[2], 0, 0, 0, 0};
-  pkt[4] = (unsigned char)(code & 0xFF);
-  sfs_log(SFS_LOG_PROTOCOL, "Sending E-pkt: error=%d", code);
-  sfs_net_sendto(net->rpc, pkt, sizeof(pkt), addr, port);
+  unsigned char pkt[4 + 4 + 128];
+  uint32_t errnum = SFS_RO_ERR_BAD_PARM;
+  const char *message = NULL;
+  size_t mlen;
+
+  riscos_error_for(code, &errnum, &message);
+  if (!message)
+    message = "Error";
+  mlen = strlen(message);
+  if (mlen > sizeof(pkt) - 9)
+    mlen = sizeof(pkt) - 9;
+
+  pkt[0] = 'E';
+  pkt[1] = rid[0];
+  pkt[2] = rid[1];
+  pkt[3] = rid[2];
+  pkt[4] = (unsigned char)(errnum & 0xFF);
+  pkt[5] = (unsigned char)((errnum >> 8) & 0xFF);
+  pkt[6] = (unsigned char)((errnum >> 16) & 0xFF);
+  pkt[7] = (unsigned char)((errnum >> 24) & 0xFF);
+  memcpy(pkt + 8, message, mlen);
+  pkt[8 + mlen] = '\0';
+
+  sfs_log(SFS_LOG_PROTOCOL, "Sending E-pkt: errno=%d -> RISC OS &%X \"%s\"",
+          code, errnum, message);
+  /* 9 + strlen: the header, the number, the message and its terminator. */
+  sfs_net_sendto(net->rpc, pkt, 9 + mlen, addr, port);
 }
 
 static void send_r_pkt(sfs_net *net, const unsigned char *rid, const void *data,
