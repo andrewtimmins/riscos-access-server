@@ -9,6 +9,16 @@ target_include_directories(test_names PRIVATE ../src)
 
 add_test(NAME test_names COMMAND test_names)
 
+# The 32-bit length the wire protocol carries, and the off_t width trap behind
+# issue #22. Header-only, so it needs no source file of its own.
+add_executable(test_filedesc
+    test_filedesc.c
+)
+
+target_include_directories(test_filedesc PRIVATE ../src)
+
+add_test(NAME test_filedesc COMMAND test_filedesc)
+
 # Protocol-level access control tests. These start the real server and drive it
 # over UDP, because the properties they check - that a protected share needs
 # authentication, and that a handle belongs to the client that opened it -

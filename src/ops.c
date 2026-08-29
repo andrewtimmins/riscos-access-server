@@ -928,10 +928,12 @@ static void build_filedesc(unsigned char *out, const struct stat *st,
   uint64_t cs = sfs_time_to_riscos(st->st_mtime);
   uint32_t load = sfs_make_load_addr(filetype, cs);
   uint32_t exec = sfs_make_exec_addr(cs);
-  // Cap file sizes >4 GB to 0xFFFFFFFF; the wire protocol is 32-bit.
+  // The wire protocol carries a 32-bit length, so a larger file is capped.
+  // sfs_length_for_wire() takes a fixed 64-bit width because off_t is 32 bits
+  // on Windows; comparing against (off_t)0xFFFFFFFF there truncated the limit
+  // to -1 and reported every file as 4G. See issue #22.
   uint32_t len = S_ISDIR(st->st_mode) ? 0x800u
-               : (st->st_size > (off_t)0xFFFFFFFF ? 0xFFFFFFFFu
-                                                    : (uint32_t)st->st_size);
+                                      : sfs_length_for_wire((int64_t)st->st_size);
   uint32_t attrs = sfs_mode_to_attrs(st->st_mode);
   uint32_t type = S_ISDIR(st->st_mode) ? SFS_TYPE_DIR : SFS_TYPE_FILE;
 
@@ -1339,7 +1341,8 @@ int sfs_rpc_handle(const unsigned char *buf, size_t len, const char *addr,
         int hid = 0, tok = 0;
         if (sfs_handles_add_ex(handles, SFS_HANDLE_FILE, fd, actual_path,
                                sfs_make_load_addr(filetype, cs),
-                               sfs_make_exec_addr(cs), (uint32_t)st.st_size,
+                               sfs_make_exec_addr(cs),
+                               sfs_length_for_wire((int64_t)st.st_size),
                                sfs_mode_to_attrs(st.st_mode), &hid,
                                &tok) != 0) {
           close(fd);

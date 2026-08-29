@@ -59,6 +59,25 @@ static inline time_t sfs_time_from_riscos(uint64_t cs) {
     return (time_t)((cs / SFS_CS_PER_SEC) - SFS_EPOCH_DIFF);
 }
 
+// Clamp a file size to the 32-bit length the wire protocol carries.
+//
+// Takes a fixed-width 64-bit size deliberately. off_t is NOT 64 bits
+// everywhere: on Windows it is long, which is 32 bits under LLP64, so the
+// obvious `size > (off_t)0xFFFFFFFF` truncates its own limit to -1 and then
+// every file compares greater and is reported as 4G. That was issue #22, where
+// a 7.5K file arrived at the client claiming to be four gigabytes.
+//
+// A negative size is not reachable from a successful stat() on a 64-bit off_t,
+// but a file above 2GB overflows a signed 32-bit one. Report those as zero: it
+// is still wrong, but it does not ask the client to transfer 4GB it cannot.
+static inline uint32_t sfs_length_for_wire(int64_t size) {
+    if (size <= 0)
+        return 0;
+    if ((uint64_t)size > 0xFFFFFFFFu)
+        return 0xFFFFFFFFu;
+    return (uint32_t)size;
+}
+
 // Build load address from filetype and timestamp
 static inline uint32_t sfs_make_load_addr(uint32_t filetype, uint64_t cs) {
     return 0xFFF00000u | ((filetype & 0xFFF) << 8) | ((cs >> 32) & 0xFF);
