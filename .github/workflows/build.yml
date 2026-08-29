@@ -37,75 +37,72 @@ jobs:
             fi
           fi
 
-  linux-amd64:
-    runs-on: ubuntu-latest
+  # amd64 and arm64 build identically and differ only in the runner they need,
+  # so they are one job with a matrix. The third entry is not a platform we
+  # ship: it guards `build.sh --cross-arm64`, the documented route in README.md
+  # for building the arm64 server from an x86 PC, which nothing else exercises.
+  # It builds the server only, so it runs no tests and uploads nothing.
+  linux:
+    name: linux (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            artifact: sharefs-linux-amd64
+            path: releases/linux/amd64/
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            artifact: sharefs-linux-arm64
+            path: releases/linux/arm64/
+          - arch: arm64-cross
+            runner: ubuntu-latest
+            # No artifact: this entry exists to prove the cross path builds,
+            # and the arm64 we ship is the natively built one above.
+            artifact: ''
     steps:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake
-          sudo apt-get install -y libwxgtk3.2-dev || sudo apt-get install -y libwxgtk3.0-gtk3-dev
+          if [ "${{ matrix.arch }}" = "arm64-cross" ]; then
+            sudo apt-get install -y build-essential cmake \
+              gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          else
+            sudo apt-get install -y build-essential cmake
+            sudo apt-get install -y libwxgtk3.2-dev || sudo apt-get install -y libwxgtk3.0-gtk3-dev
+          fi
 
-      - name: Build (amd64)
-        run: ./build.sh --deb
+      - name: Build
+        run: |
+          if [ "${{ matrix.arch }}" = "arm64-cross" ]; then
+            ./build.sh --cross-arm64
+          else
+            ./build.sh --deb
+          fi
 
       - name: Run tests
+        if: matrix.arch != 'arm64-cross'
         run: |
           cd build
           ctest --output-on-failure
 
-      - name: Upload amd64 release
-        uses: actions/upload-artifact@v4
-        with:
-          name: sharefs-linux-amd64
-          path: releases/linux/amd64/
-          if-no-files-found: error
-
-  linux-arm64:
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential cmake
-          sudo apt-get install -y libwxgtk3.2-dev || sudo apt-get install -y libwxgtk3.0-gtk3-dev
-
-      - name: Build (arm64 native)
-        run: ./build.sh --deb
-
-      - name: Run tests
-        run: |
-          cd build
-          ctest --output-on-failure
-
-      - name: Upload arm64 release
-        uses: actions/upload-artifact@v4
-        with:
-          name: sharefs-linux-arm64
-          path: releases/linux/arm64/
-          if-no-files-found: error
-
-  linux-arm64-cross:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install cross-compiler
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential cmake gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-
-      - name: Cross-compile server (arm64)
-        run: ./build.sh --cross-arm64
-
-      - name: Verify arm64 binary
+      - name: Verify the cross-compiled binary really is arm64
+        if: matrix.arch == 'arm64-cross'
         run: file releases/linux/arm64/sharefs-server | grep -iE 'aarch64|ARM'
 
-  windows-x64:
+      - name: Upload release
+        if: matrix.artifact != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.path }}
+          if-no-files-found: error
+
+  windows:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -150,45 +147,36 @@ jobs:
   # one universal binary, because Homebrew ships wxWidgets per-architecture
   # only. The server itself has no dependencies and could be built universal in
   # one pass; the admin GUI is what forces the two-slice approach.
-  macos-arm64:
+  #
+  # The two slices are one job with a matrix, but they are not symmetrical:
+  # free Intel runners are effectively unavailable, so the x86_64 slice is
+  # cross-compiled on an Apple Silicon runner. Apple clang emits x86_64 via
+  # CMAKE_OSX_ARCHITECTURES; what it needs is x86_64 libraries, which come from
+  # a second Homebrew installed under Rosetta into /usr/local. Hence the extra
+  # steps that run for that arch alone.
+  macos:
+    name: macos (${{ matrix.arch }})
     runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x86_64]
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rosetta 2
+        if: matrix.arch == 'x86_64'
+        run: softwareupdate --install-rosetta --agree-to-license
+
       - name: Install dependencies
+        if: matrix.arch == 'arm64'
         run: |
           brew update
           brew install cmake wxwidgets
           brew list --versions wxwidgets
 
-      - name: Build arm64 slice
-        run: ./build-macos.sh --arch arm64
-
-      - name: Run tests
-        run: ctest --test-dir build-mac-arm64 --output-on-failure
-
-      - name: Upload arm64 slice
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-slice-arm64
-          # The staged tree, not just the binary: it carries the bundled
-          # libraries, which only exist on this runner.
-          path: build-mac-arm64/appstage/
-          if-no-files-found: error
-
-  macos-x86_64:
-    # Free Intel runners are effectively unavailable, so the x86_64 slice is
-    # cross-compiled on an Apple Silicon runner. Apple clang emits x86_64 via
-    # CMAKE_OSX_ARCHITECTURES; what it needs is x86_64 libraries, which come
-    # from a second Homebrew installed under Rosetta into /usr/local.
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rosetta 2
-        run: softwareupdate --install-rosetta --agree-to-license
-
       - name: Install x86_64 Homebrew and dependencies
+        if: matrix.arch == 'x86_64'
         timeout-minutes: 20
         run: |
           if [ ! -x /usr/local/bin/brew ]; then
@@ -208,24 +196,33 @@ jobs:
           arch -x86_64 /usr/local/bin/brew install cmake wxwidgets
           arch -x86_64 /usr/local/bin/brew list --versions wxwidgets
 
-      - name: Build x86_64 slice
+      - name: Build slice
         run: |
-          # Resolve wx-config and cmake from the x86_64 Homebrew so the slice
-          # links x86_64 libraries.
-          export PATH="/usr/local/bin:$PATH"
-          ./build-macos.sh --arch x86_64
+          # For x86_64, resolve wx-config and cmake from the x86_64 Homebrew so
+          # the slice links x86_64 libraries.
+          if [ "${{ matrix.arch }}" = "x86_64" ]; then
+            export PATH="/usr/local/bin:$PATH"
+          fi
+          ./build-macos.sh --arch ${{ matrix.arch }}
 
-      - name: Upload x86_64 slice
+      - name: Run tests
+        # The arm64 slice is the one this runner can execute.
+        if: matrix.arch == 'arm64'
+        run: ctest --test-dir build-mac-${{ matrix.arch }} --output-on-failure
+
+      - name: Upload slice
         uses: actions/upload-artifact@v4
         with:
-          name: macos-slice-x86_64
-          path: build-mac-x86_64/appstage/
+          name: macos-slice-${{ matrix.arch }}
+          # The staged tree, not just the binary: it carries the bundled
+          # libraries, which only exist on this runner.
+          path: build-mac-${{ matrix.arch }}/appstage/
           if-no-files-found: error
 
   macos-universal:
     # Fuse the slices and package the release. Installs no dependencies of its
     # own: everything it needs came from the two slice jobs.
-    needs: [macos-arm64, macos-x86_64]
+    needs: [macos]
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -278,7 +275,7 @@ jobs:
 
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [version-check, linux-amd64, linux-arm64, windows-x64, macos-universal]
+    needs: [version-check, linux, windows, macos-universal]
     runs-on: ubuntu-latest
     permissions:
       contents: write
