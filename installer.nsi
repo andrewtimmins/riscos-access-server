@@ -21,7 +21,10 @@
 
 # Installer settings
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
-OutFile "sharefs-server_${PRODUCT_VERSION}-setup.exe"
+!ifndef ARCH_SUFFIX
+  !define ARCH_SUFFIX ""
+!endif
+OutFile "sharefs-server_${PRODUCT_VERSION}${ARCH_SUFFIX}-setup.exe"
 InstallDir "C:\ShareFS"
 InstallDirRegKey HKLM "Software\ShareFS" "InstallDir"
 RequestExecutionLevel admin

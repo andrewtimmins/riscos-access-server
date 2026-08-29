@@ -38,10 +38,7 @@ jobs:
           fi
 
   # amd64 and arm64 build identically and differ only in the runner they need,
-  # so they are one job with a matrix. The third entry is not a platform we
-  # ship: it guards `build.sh --cross-arm64`, the documented route in README.md
-  # for building the arm64 server from an x86 PC, which nothing else exercises.
-  # It builds the server only, so it runs no tests and uploads nothing.
+  # so they are one job with a matrix.
   linux:
     name: linux (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
@@ -51,96 +48,116 @@ jobs:
         include:
           - arch: amd64
             runner: ubuntu-latest
-            artifact: sharefs-linux-amd64
-            path: releases/linux/amd64/
           - arch: arm64
             runner: ubuntu-24.04-arm
-            artifact: sharefs-linux-arm64
-            path: releases/linux/arm64/
-          - arch: arm64-cross
-            runner: ubuntu-latest
-            # No artifact: this entry exists to prove the cross path builds,
-            # and the arm64 we ship is the natively built one above.
-            artifact: ''
     steps:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
           sudo apt-get update
-          if [ "${{ matrix.arch }}" = "arm64-cross" ]; then
-            sudo apt-get install -y build-essential cmake \
-              gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-          else
-            sudo apt-get install -y build-essential cmake
-            sudo apt-get install -y libwxgtk3.2-dev || sudo apt-get install -y libwxgtk3.0-gtk3-dev
-          fi
+          sudo apt-get install -y build-essential cmake
+          sudo apt-get install -y libwxgtk3.2-dev || sudo apt-get install -y libwxgtk3.0-gtk3-dev
 
       - name: Build
-        run: |
-          if [ "${{ matrix.arch }}" = "arm64-cross" ]; then
-            ./build.sh --cross-arm64
-          else
-            ./build.sh --deb
-          fi
+        run: ./build.sh --deb
 
       - name: Run tests
-        if: matrix.arch != 'arm64-cross'
         run: |
           cd build
           ctest --output-on-failure
 
-      - name: Verify the cross-compiled binary really is arm64
-        if: matrix.arch == 'arm64-cross'
-        run: file releases/linux/arm64/sharefs-server | grep -iE 'aarch64|ARM'
-
       - name: Upload release
-        if: matrix.artifact != ''
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.path }}
+          name: sharefs-linux-${{ matrix.arch }}
+          path: releases/linux/${{ matrix.arch }}/
           if-no-files-found: error
 
+      # README.md documents `build.sh --cross-arm64` for building the arm64
+      # server from an x86 PC, and the native arm64 job above does not
+      # exercise it. Checked here rather than as a job of its own, because the
+      # arm64 we ship is the natively built one and this produces nothing.
+      - name: Check the documented arm64 cross-compile still works
+        if: matrix.arch == 'amd64'
+        run: |
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          ./build.sh --cross-arm64
+          file releases/linux/arm64/sharefs-server | grep -iE 'aarch64|ARM'
+
+  # x64 cross-compiles with the MinGW in apt. arm64 has no apt toolchain, so it
+  # uses llvm-mingw, which ships aarch64-w64-mingw32-* drivers named the way
+  # cmake/toolchains/mingw-w64-aarch64.cmake expects. Pinned, because a
+  # toolchain that moves under us would change the binaries we ship.
   windows:
+    name: windows (${{ matrix.arch }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    env:
+      LLVM_MINGW_VERSION: "20260826"
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install MinGW and packaging tools
+      - name: Install packaging tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            gcc-mingw-w64-x86-64 \
-            g++-mingw-w64-x86-64 \
-            zip nsis
+          sudo apt-get install -y zip nsis
+
+      - name: Install MinGW (x64, from apt)
+        if: matrix.arch == 'x64'
+        run: sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
+
+      - name: Install llvm-mingw (arm64, not packaged in apt)
+        if: matrix.arch == 'arm64'
+        run: |
+          name="llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-x86_64"
+          url="https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_VERSION}/${name}.tar.xz"
+          curl -fsSL "$url" -o /tmp/llvm-mingw.tar.xz
+          sudo tar -xf /tmp/llvm-mingw.tar.xz -C /opt
+          echo "/opt/${name}/bin" >> "$GITHUB_PATH"
+
+      - name: Show the toolchain
+        run: ${{ matrix.arch == 'arm64' && 'aarch64-w64-mingw32-gcc' || 'x86_64-w64-mingw32-gcc' }} --version
 
       - name: Restore wxWidgets cache
         id: wx-cache
         uses: actions/cache@v4
         with:
-          path: ~/wxWidgets-mingw-x64/install
-          key: wxwidgets-mingw-x64-3.2.4-${{ runner.os }}
+          path: ~/wxWidgets-mingw-${{ matrix.arch }}/install
+          key: wxwidgets-mingw-${{ matrix.arch }}-3.2.4-${{ runner.os }}-${{ env.LLVM_MINGW_VERSION }}
           restore-keys: |
-            wxwidgets-mingw-x64-3.2.4-${{ runner.os }}-
+            wxwidgets-mingw-${{ matrix.arch }}-3.2.4-${{ runner.os }}-
 
       - name: Build wxWidgets for MinGW (first run only)
         if: steps.wx-cache.outputs.cache-hit != 'true' && (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-        run: ./build.sh --windows-wxwidgets
+        run: ./build.sh --windows-wxwidgets --windows-arch ${{ matrix.arch }}
 
-      - name: Build Windows x64 (server + zip)
+      - name: Build server + zip
         if: github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v'))
-        run: ./build.sh --windows-only --zip
+        run: ./build.sh --windows-only --windows-arch ${{ matrix.arch }} --zip
 
-      - name: Build Windows x64 (full release)
+      - name: Build full release
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        run: ./build.sh --windows-only --windows-full --zip
+        run: ./build.sh --windows-only --windows-full --windows-arch ${{ matrix.arch }} --zip
 
-      - name: Upload Windows x64 release
+      - name: Verify the binary targets the right machine
+        run: |
+          server=$(find releases/windows/${{ matrix.arch }} -name 'sharefs-server.exe' | head -1)
+          file "$server"
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            file "$server" | grep -iE 'Aarch64|ARM64'
+          else
+            file "$server" | grep -iE 'x86-64|x86_64'
+          fi
+
+      - name: Upload release
         uses: actions/upload-artifact@v4
         with:
-          name: sharefs-windows-x64
-          path: releases/windows/x64/
+          name: sharefs-windows-${{ matrix.arch }}
+          path: releases/windows/${{ matrix.arch }}/
           if-no-files-found: error
 
   # macOS is built as two single-architecture slices which are then fused into
@@ -298,6 +315,12 @@ jobs:
           name: sharefs-windows-x64
           path: release-assets/windows-x64
 
+      - name: Download Windows arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sharefs-windows-arm64
+          path: release-assets/windows-arm64
+
       - name: Download macOS universal artifact
         uses: actions/download-artifact@v4
         with:
@@ -312,12 +335,23 @@ jobs:
           cp release-assets/linux-arm64/*.deb upload/
           cp release-assets/windows-x64/*.zip upload/
           cp release-assets/windows-x64/*-setup.exe upload/
+          cp release-assets/windows-arm64/*.zip upload/
+          cp release-assets/windows-arm64/*-setup.exe upload/
           cp release-assets/linux-amd64/sharefs-server upload/sharefs-server-linux-amd64
           cp release-assets/linux-amd64/sharefs-admin upload/sharefs-admin-linux-amd64
           cp release-assets/linux-arm64/sharefs-server upload/sharefs-server-linux-arm64
           cp release-assets/linux-arm64/sharefs-admin upload/sharefs-admin-linux-arm64
           cp release-assets/macos/*.zip upload/
           ls -la upload/
+          # Every architecture must contribute a distinct file. A collision
+          # here would publish one arch's build under both names.
+          expected=$(ls release-assets/*/*.zip release-assets/*/*-setup.exe \
+                        release-assets/*/*.deb 2>/dev/null | wc -l)
+          actual=$(ls upload/*.zip upload/*-setup.exe upload/*.deb 2>/dev/null | wc -l)
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::collected $actual packaged assets from $expected inputs; names must collide"
+            exit 1
+          fi
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

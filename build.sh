@@ -503,7 +503,7 @@ create_windows_installer() {
     fi
 
     echo ""
-    echo "Creating Windows NSIS installer (x64)..."
+    echo "Creating Windows NSIS installer ($WINDOWS_ARCH)..."
 
     if ! command -v makensis &>/dev/null; then
         echo "Warning: 'makensis' command not found."
@@ -514,11 +514,19 @@ create_windows_installer() {
     cp LICENSE "$WINDOWS_RELEASE/" 2>/dev/null || echo "Note: LICENSE file not found"
     cp README.md "$WINDOWS_RELEASE/" 2>/dev/null || echo "Note: README.md file not found"
 
-    local installer="sharefs-server_${VERSION}-setup.exe"
+    # Suffix the arm64 installer, as create_windows_zip does for the archive.
+    # Without it both architectures produce the same filename and the second
+    # overwrites the first when the release job collects them.
+    local arch_suffix=""
+    if [ "$WINDOWS_ARCH" != "x64" ]; then
+        arch_suffix="-${WINDOWS_ARCH}"
+    fi
+    local installer="sharefs-server_${VERSION}${arch_suffix}-setup.exe"
     local nsis_release_dir
     nsis_release_dir=$(echo "$WINDOWS_RELEASE" | tr '/' '\\')
     if ! makensis -NOCD \
         -DPRODUCT_VERSION="${VERSION}" \
+        -DARCH_SUFFIX="${arch_suffix}" \
         -DWINDOWS_RELEASE_DIR="${nsis_release_dir}" \
         installer.nsi > /dev/null; then
         echo "Warning: NSIS installer creation failed"
