@@ -36,6 +36,30 @@ if(Python3_FOUND)
     )
     # Binds the real UDP ports, so it must not run alongside another instance.
     set_tests_properties(protocol_security PROPERTIES RUN_SERIAL TRUE)
+
+    # Filename visibility. A RISC OS name starting with '/' is stored with a
+    # leading '.', so the catalogue has to list dotfiles - issue #21.
+    file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/listing_fixtures/Public/.git)
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/listing_fixtures/Public/ReadMe,fff
+         "hello riscos\n")
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/listing_fixtures/Public/.gitattributes,fff
+         "* text=auto\n")
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/listing_fixtures/Public/.git/HEAD,fff
+         "ref: refs/heads/main\n")
+
+    configure_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/listing_test.conf.in
+        ${CMAKE_CURRENT_BINARY_DIR}/listing_test.conf
+        @ONLY
+    )
+    add_test(NAME protocol_listing
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/protocol_listing_test.py
+                ${CMAKE_CURRENT_BINARY_DIR}/listing_test.conf
+                $<TARGET_FILE:sharefs-server>
+    )
+    # Binds the same UDP ports as the security test.
+    set_tests_properties(protocol_listing PROPERTIES RUN_SERIAL TRUE)
 else()
     message(STATUS "Python3 not found - skipping protocol security tests")
 endif()

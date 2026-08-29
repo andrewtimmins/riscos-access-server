@@ -968,7 +968,12 @@ static void populate_dir_listing(const char *host_path, const sfs_config *cfg,
   struct dirent *ent;
 
   while ((ent = readdir(d)) != NULL) {
-    if (ent->d_name[0] == '.')
+    // Skip only the directory's own two entries. A leading '.' on the host is
+    // how a RISC OS name beginning with '/' is stored (see names.c), so a
+    // dotfile is ordinary share content and must be listed. Skipping the lot
+    // made every such file invisible to the client although it was on disk,
+    // which is issue #21.
+    if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
       continue;
 
     if (count >= 100000) {
