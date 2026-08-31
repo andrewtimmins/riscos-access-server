@@ -263,6 +263,18 @@ resolve_wx_config() {
     echo ""
 }
 
+# Cross-build wxWidgets for Windows.
+#
+# Only core and base are linked (see admin/CMakeLists.txt), so the components
+# that are no use here are turned off. --disable-stc is not only a saving: the
+# Scintilla sources bundled with wxWidgets 3.2.4 call std::fill without
+# including <algorithm>, which older libstdc++ headers provided anyway but the
+# libc++ in llvm-mingw does not, so the Windows arm64 cross-build failed on it:
+#
+#   src/stc/scintilla/src/XPM.cxx:91: error: no member named 'fill' in
+#   namespace 'std'
+#
+# Nothing in ShareFS uses wxStyledTextCtrl, so the fix is to not build it.
 build_wxwidgets_mingw() {
     echo "Building wxWidgets for MinGW ($WINDOWS_ARCH)..."
     echo "This may take 10-15 minutes..."
@@ -299,7 +311,8 @@ build_wxwidgets_mingw() {
         --disable-shared \
         --enable-unicode \
         --disable-mediactrl \
-        --disable-webview > "$log" 2>&1; then
+        --disable-webview \
+        --disable-stc > "$log" 2>&1; then
         echo "Error: wxWidgets configure failed. Last 40 lines:"
         tail -40 "$log"
         echo "Full configure log: $WX_MINGW_DIR/build-mingw/config.log"
