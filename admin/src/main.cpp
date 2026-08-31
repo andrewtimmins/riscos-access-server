@@ -40,22 +40,48 @@ extern "C" {
 #include <stdlib.h>
 #endif
 
+// The words src/cli.c treats as commands. They are skipped when looking for a
+// configuration file below, because on Windows wx parses the real command line
+// and will see them.
+static bool IsCommandWord(const wxString &word) {
+  return word == "gui" || word == "serve" || word == "status" ||
+         word == "config" || word == "autostart" || word == "service";
+}
+
 class ShareFsApp : public wxApp {
 public:
-  // Accept an optional configuration file path. Without this wxApp's default
-  // parser rejects any positional argument and the application exits with a
-  // usage message. The subcommands never reach here: cli.c has consumed them.
+  // wx parses the command line itself, and on Windows it takes it from the
+  // operating system rather than from the argv this program filtered (see
+  // run_gui). So the parser here has to accept everything `sharefs` accepts,
+  // or wx exits with a usage message for an option src/cli.c has already
+  // handled.
   void OnInitCmdLine(wxCmdLineParser &parser) override {
     wxApp::OnInitCmdLine(parser);
+    parser.AddOption("c", "config", "configuration file",
+                     wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
+    parser.AddSwitch("", "no-ui", "share without opening the window",
+                     wxCMD_LINE_PARAM_OPTIONAL);
     parser.AddParam("configuration file", wxCMD_LINE_VAL_STRING,
-                    wxCMD_LINE_PARAM_OPTIONAL);
+                    wxCMD_LINE_PARAM_OPTIONAL | wxCMD_LINE_PARAM_MULTIPLE);
   }
 
   bool OnCmdLineParsed(wxCmdLineParser &parser) override {
     if (!wxApp::OnCmdLineParsed(parser))
       return false;
-    if (parser.GetParamCount() > 0)
-      m_configArg = parser.GetParam(0);
+
+    wxString value;
+    if (parser.Found("config", &value)) {
+      m_configArg = value;
+      return true;
+    }
+
+    for (size_t i = 0; i < parser.GetParamCount(); ++i) {
+      const wxString param = parser.GetParam(i);
+      if (IsCommandWord(param))
+        continue;
+      m_configArg = param;
+      break;
+    }
     return true;
   }
 
@@ -107,12 +133,18 @@ static HINSTANCE g_instance = nullptr;
 // there is none.
 static int run_gui(int argc, char **argv) {
 #ifdef __WXMSW__
-  // wx normally learns the module handle from its own WinMain. This program
-  // has its own entry point, so pass it on; see the WinMain below.
-  if (g_instance)
-    wxSetInstance(g_instance);
-#endif
+  (void)argc;
+  (void)argv;
+  // wx's own WinMain-compatible entry point, which is the only documented way
+  // to hand it a module handle: wxSetInstance lives in wx/msw/private.h and is
+  // not ours to call. It takes the command line from the operating system
+  // rather than from argv, which is why the parser above accepts every option
+  // this program does. GetModuleHandle covers the console entry point, where
+  // there was no WinMain to give us one.
+  return wxEntry(g_instance ? g_instance : ::GetModuleHandle(NULL));
+#else
   return wxEntry(argc, argv);
+#endif
 }
 
 #ifdef _WIN32
