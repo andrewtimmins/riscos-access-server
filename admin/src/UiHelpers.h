@@ -1,5 +1,5 @@
 /*
-  ShareFS Server - Admin GUI layout helpers
+  ShareFS - layout helpers
 
   Copyright (C) 2025-2026 Andy Timmins
 

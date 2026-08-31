@@ -1,5 +1,5 @@
 /*
-  ShareFS Server - Admin GUI embedded icons
+  ShareFS - embedded icons
 
   Copyright (C) 2025-2026 Andy Timmins
 

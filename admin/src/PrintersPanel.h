@@ -1,5 +1,5 @@
 /*
-  ShareFS Server - Admin GUI Printers Panel
+  ShareFS - Printers Panel
 
   Copyright (C) 2025-2026 Andy Timmins
 

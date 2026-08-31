@@ -15,7 +15,7 @@ case "$1" in
         chmod 664 /etc/sharefs.conf
 
         install -d -m 755 /etc/polkit-1/rules.d
-        cat >/etc/polkit-1/rules.d/90-sharefs-server.rules <<'EOF'
+        cat >/etc/polkit-1/rules.d/90-sharefs-server.rules <<'POLKIT'
 polkit.addRule(function(action, subject) {
   if (action.id == "org.freedesktop.systemd1.manage-units" &&
       action.lookup("unit") == "sharefs.service" &&
@@ -23,8 +23,27 @@ polkit.addRule(function(action, subject) {
     return polkit.Result.YES;
   }
 });
-EOF
+POLKIT
         chmod 644 /etc/polkit-1/rules.d/90-sharefs-server.rules
+
+        # The group above owns the configuration file and is what the polkit
+        # rule checks, but nothing ever put anybody in it, so on a fresh
+        # install the ShareFS window could neither save its settings nor start
+        # and stop the service. Add whoever is installing the package: with
+        # sudo or pkexec that is the real user, and with a plain root shell
+        # there is nobody to add and root needs no help.
+        install_user="${SUDO_USER:-${PKEXEC_UID:-}}"
+        if [ -n "${PKEXEC_UID:-}" ] && [ -z "${SUDO_USER:-}" ]; then
+            install_user="$(getent passwd "$PKEXEC_UID" | cut -d: -f1)"
+        fi
+        if [ -n "$install_user" ] && [ "$install_user" != "root" ]; then
+            if ! id -nG "$install_user" 2>/dev/null | tr ' ' '\n' | grep -qx sharefs-admin; then
+                adduser "$install_user" sharefs-admin >/dev/null 2>&1 || \
+                    usermod -aG sharefs-admin "$install_user" >/dev/null 2>&1 || true
+                echo "ShareFS: added $install_user to the sharefs-admin group."
+                echo "ShareFS: log out and back in before using the ShareFS window."
+            fi
+        fi
 
         mkdir -p /var/log/sharefs
         chmod 755 /var/log/sharefs
@@ -46,6 +65,13 @@ EOF
         systemctl daemon-reload
         systemctl enable sharefs.service
         systemctl start sharefs.service || true
+
+        if command -v update-desktop-database >/dev/null; then
+            update-desktop-database -q /usr/share/applications 2>/dev/null || true
+        fi
+        if command -v gtk-update-icon-cache >/dev/null; then
+            gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
+        fi
         ;;
 esac
 

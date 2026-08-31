@@ -1,5 +1,5 @@
 /*
-  ShareFS Server - Admin GUI About dialog
+  ShareFS - About dialog
 
   Copyright (C) 2025-2026 Andy Timmins
 

@@ -328,12 +328,27 @@ if [ "$BUILD_WXWIDGETS" = true ]; then
     exit 0
 fi
 
+# One binary, wherever the build put it: admin/sharefs has the window compiled
+# in, src/sharefs is the same program without it. See src/cli.h.
+find_sharefs_binary() {
+    local build_dir="$1"
+    local suffix="${2:-}"
+    if [ -f "$build_dir/admin/sharefs$suffix" ]; then
+        echo "$build_dir/admin/sharefs$suffix"
+    elif [ -f "$build_dir/src/sharefs$suffix" ]; then
+        echo "$build_dir/src/sharefs$suffix"
+    fi
+}
+
 stage_linux_release() {
     mkdir -p "$LINUX_RELEASE"
-    cp build/src/sharefs-server "$LINUX_RELEASE/"
-    if [ -f "build/admin/sharefs-admin" ]; then
-        cp build/admin/sharefs-admin "$LINUX_RELEASE/"
+    local binary
+    binary=$(find_sharefs_binary build)
+    if [ -z "$binary" ]; then
+        echo "Error: no sharefs binary was produced"
+        exit 1
     fi
+    cp "$binary" "$LINUX_RELEASE/"
     cp sharefs.conf.sample "$LINUX_RELEASE/sharefs.conf"
     if [ -f "scripts/configure-firewall-linux.sh" ]; then
         cp scripts/configure-firewall-linux.sh "$LINUX_RELEASE/"
@@ -364,10 +379,7 @@ build_linux() {
     stage_linux_release
 
     echo "✓ Linux build complete ($LINUX_ARCH)"
-    echo "  Server: $LINUX_RELEASE/sharefs-server"
-    if [ -f "$LINUX_RELEASE/sharefs-admin" ]; then
-        echo "  Admin:  $LINUX_RELEASE/sharefs-admin"
-    fi
+    echo "  ShareFS: $LINUX_RELEASE/sharefs"
 
     if [ "$BUILD_DEB" = true ]; then
         echo ""
@@ -436,26 +448,30 @@ build_windows() {
     cmake "${cmake_args[@]}" > /dev/null
     cmake --build "$build_dir" -j"$NPROC"
 
-    cp "$build_dir/src/sharefs-server.exe" "$WINDOWS_RELEASE/"
-    cp "$build_dir/src/sharefs-service.exe" "$WINDOWS_RELEASE/"
-    if [ -f "$build_dir/admin/sharefs-admin.exe" ]; then
-        cp "$build_dir/admin/sharefs-admin.exe" "$WINDOWS_RELEASE/"
+    local binary
+    binary=$(find_sharefs_binary "$build_dir" .exe)
+    if [ -z "$binary" ]; then
+        echo "Error: no sharefs.exe was produced"
+        exit 1
     fi
+    cp "$binary" "$WINDOWS_RELEASE/"
+    # Whether this binary has the window compiled in, so the installer can say
+    # so rather than shipping a setup program for something that only serves.
+    case "$binary" in
+        */admin/*) WINDOWS_HAS_GUI=true ;;
+        *) WINDOWS_HAS_GUI=false ;;
+    esac
     cp sharefs.conf.sample-windows "$WINDOWS_RELEASE/sharefs.conf"
     if [ -f "scripts/configure-firewall-windows.bat" ]; then
         cp scripts/configure-firewall-windows.bat "$WINDOWS_RELEASE/"
     fi
 
     echo "✓ Windows build complete ($WINDOWS_ARCH)"
-    echo "  Server:  $WINDOWS_RELEASE/sharefs-server.exe"
-    echo "  Service: $WINDOWS_RELEASE/sharefs-service.exe"
-    if [ -f "$WINDOWS_RELEASE/sharefs-admin.exe" ]; then
-        echo "  Admin:   $WINDOWS_RELEASE/sharefs-admin.exe"
-    fi
+    echo "  ShareFS: $WINDOWS_RELEASE/sharefs.exe"
 }
 
 create_windows_zip() {
-    if [ ! -f "$WINDOWS_RELEASE/sharefs-server.exe" ]; then
+    if [ ! -f "$WINDOWS_RELEASE/sharefs.exe" ]; then
         echo ""
         echo "Error: No Windows binaries to zip in $WINDOWS_RELEASE"
         exit 1
@@ -492,13 +508,13 @@ create_windows_installer() {
         return
     fi
 
-    if [ ! -f "$WINDOWS_RELEASE/sharefs-server.exe" ]; then
+    if [ ! -f "$WINDOWS_RELEASE/sharefs.exe" ]; then
         return
     fi
 
-    if [ ! -f "$WINDOWS_RELEASE/sharefs-admin.exe" ]; then
+    if [ "${WINDOWS_HAS_GUI:-true}" != true ]; then
         echo ""
-        echo "Note: Skipping NSIS installer (admin GUI not built)."
+        echo "Note: Skipping NSIS installer (this build has no window)."
         return
     fi
 

@@ -20,6 +20,7 @@
 #ifndef SFS_LOG_H
 #define SFS_LOG_H
 
+#include <stddef.h>
 #include <stdio.h>
 
 typedef enum {
@@ -50,6 +51,16 @@ int sfs_log_init(void);
 // Where the log actually ended up, for reporting to the user. Valid after
 // sfs_log_init(); returns NULL if logging fell back to stderr.
 const char *sfs_log_get_path(void);
+
+// The two paths the platform default resolves to, without opening anything:
+// `preferred` is tried first and `fallback` is where the log goes when that
+// cannot be written. Either pointer may be NULL.
+//
+// Exposed so that a window reporting "where does the log go" asks the code that
+// decides rather than keeping a second copy of the rules, which is how the
+// configuration search order came to disagree with itself.
+void sfs_log_default_paths(char *preferred, size_t preferred_sz, char *fallback,
+                           size_t fallback_sz);
 
 // Shutdown logging - closes log file
 void sfs_log_shutdown(void);

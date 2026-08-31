@@ -1,5 +1,5 @@
 /*
-  ShareFS Server - Admin GUI Server Panel
+  ShareFS - Server Panel
 
   Copyright (C) 2025-2026 Andy Timmins
 
@@ -24,6 +24,11 @@
 #include <wx/spinctrl.h>
 #include <wx/statbox.h>
 
+extern "C" {
+#include "log.h"
+#include "paths.h"
+}
+
 #ifdef _WIN32
 #include <iphlpapi.h>
 #include <winsock2.h>
@@ -37,23 +42,21 @@
 
 #endif
 
-// Mirrors the fallback order in src/log.c so the tab reports where the log
-// actually lands rather than where it would ideally go.
+// Asks src/log.c where the log goes rather than keeping a second copy of the
+// rules here. The two used to be maintained separately, and the tab could
+// name a file the server had never written to.
 static wxString DefaultLogPath() {
-#ifdef __WXMSW__
-  wxString programData;
-  if (!wxGetEnv("ProgramData", &programData) || programData.empty())
-    programData = "C:\\ProgramData";
-  return programData + "\\ShareFS\\sharefs.log";
-#elif defined(__WXOSX__)
-  if (wxFileExists("/var/log/sharefs/sharefs.log"))
-    return "/var/log/sharefs/sharefs.log";
-  return wxGetHomeDir() + "/Library/Logs/ShareFS/sharefs.log";
-#else
-  if (wxFileExists("/var/log/sharefs/sharefs.log"))
-    return "/var/log/sharefs/sharefs.log";
-  return "/tmp/sharefs.log";
-#endif
+  char preferred[SFS_PATH_MAX];
+  char fallback[SFS_PATH_MAX];
+  sfs_log_default_paths(preferred, sizeof(preferred), fallback,
+                        sizeof(fallback));
+
+  // The preferred path needs root on most systems, so report it only when it
+  // is actually there; otherwise the log is in the fallback.
+  const wxString first = wxString::FromUTF8(preferred);
+  if (wxFileExists(first))
+    return first;
+  return wxString::FromUTF8(fallback);
 }
 
 enum { ID_BROWSE_CONFIG = wxID_HIGHEST + 500 };

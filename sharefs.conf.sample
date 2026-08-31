@@ -1,4 +1,15 @@
-# ShareFS Server - Sample Configuration
+# ShareFS - Sample Configuration
+#
+# ShareFS looks for its configuration in this order, and uses the first one it
+# finds, whether it was started from the window, the command line or a service:
+#
+#   Linux    /etc/sharefs.conf, then ~/.config/sharefs/sharefs.conf
+#   macOS    /opt/homebrew/etc, /usr/local/etc or /etc/sharefs.conf, then
+#            ~/Library/Application Support/ShareFS/sharefs.conf
+#   Both     ./sharefs.conf, so an unpacked archive works where it stands
+#
+# `sharefs config search` prints the list with the one in use marked, and
+# `sharefs config path` prints just that one.
 
 [server]
 # Logging: none, error, info, debug, protocol

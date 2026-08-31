@@ -1,7 +1,13 @@
-# ShareFS Server - Windows Installer Script
+# ShareFS - Windows Installer Script
 # Built with NSIS (Nullsoft Scriptable Install System)
+#
+# One executable is installed, not three. sharefs.exe is the window, the
+# server, and the thing that installs the service, chosen by what it is asked
+# to do; see src/cli.h. Earlier versions shipped sharefs-server.exe,
+# sharefs-service.exe and sharefs-admin.exe, so the upgrade path here removes
+# them and re-registers the service against the new binary.
 
-!define PRODUCT_NAME "ShareFS Server"
+!define PRODUCT_NAME "ShareFS"
 !ifndef PRODUCT_VERSION
 !define PRODUCT_VERSION "0.1.1"
 !endif
@@ -47,8 +53,8 @@ ShowUnInstDetails show
 
 # Finish page with options
 !define MUI_FINISHPAGE_RUN
-!define MUI_FINISHPAGE_RUN_TEXT "Start Admin GUI"
-!define MUI_FINISHPAGE_RUN_FUNCTION "LaunchAdminGUI"
+!define MUI_FINISHPAGE_RUN_TEXT "Open ShareFS"
+!define MUI_FINISHPAGE_RUN_FUNCTION "LaunchShareFS"
 !define MUI_FINISHPAGE_SHOWREADME "$INSTDIR\README.txt"
 !define MUI_FINISHPAGE_SHOWREADME_TEXT "View README"
 !insertmacro MUI_PAGE_FINISH
@@ -66,7 +72,7 @@ VIProductVersion "${PRODUCT_VERSION}.0"
 VIAddVersionKey "ProductName" "${PRODUCT_NAME}"
 VIAddVersionKey "ProductVersion" "${PRODUCT_VERSION}"
 VIAddVersionKey "CompanyName" "${PRODUCT_PUBLISHER}"
-VIAddVersionKey "FileDescription" "ShareFS Server Installer"
+VIAddVersionKey "FileDescription" "ShareFS Installer"
 VIAddVersionKey "FileVersion" "${PRODUCT_VERSION}"
 
 # Installer sections
@@ -79,10 +85,22 @@ Section "Core Files" SecCore
   
   SetOutPath "$INSTDIR"
   
-  # Install executables
-  File "${WINDOWS_RELEASE_DIR}\sharefs-server.exe"
-  File "${WINDOWS_RELEASE_DIR}\sharefs-service.exe"
-  File "${WINDOWS_RELEASE_DIR}\sharefs-admin.exe"
+  # One executable. Run it to open the window, or with a command to do
+  # anything else: `sharefs serve`, `sharefs service install`, `sharefs status`.
+  File "${WINDOWS_RELEASE_DIR}\sharefs.exe"
+
+  # An upgrade from 0.1.7 or earlier finds three executables here and a service
+  # registered against one of them. Take the old service out of the register
+  # before the new one goes in, then remove the binaries.
+  IfFileExists "$INSTDIR\sharefs-service.exe" 0 NoLegacyService
+    DetailPrint "Removing the service registered by the previous version..."
+    nsExec::ExecToLog '"$INSTDIR\sharefs-service.exe" stop'
+    Sleep 1500
+    nsExec::ExecToLog '"$INSTDIR\sharefs-service.exe" uninstall'
+  NoLegacyService:
+  Delete "$INSTDIR\sharefs-service.exe"
+  Delete "$INSTDIR\sharefs-server.exe"
+  Delete "$INSTDIR\sharefs-admin.exe"
   
   # Install documentation (but not config - that goes to ProgramData)
   SetOutPath "$INSTDIR"
@@ -99,14 +117,30 @@ Section "Core Files" SecCore
   CreateDirectory "$INSTDIR\Shares\Public"
   SetOutPath "$INSTDIR"
 
-  # Copy config to install dir if not exists (preserve existing config on upgrade)
-  IfFileExists "$INSTDIR\sharefs.conf" PreserveSharefs InstallConfig
+  # The configuration lives in ProgramData: it is the first place both the
+  # window and the server look (see src/paths.c), and a service running as
+  # LocalSystem can read it. Older versions put it in the install directory,
+  # which is third in that list, so an existing one is moved rather than
+  # shadowed - otherwise an upgrade would silently start serving the defaults
+  # instead of the user's shares.
+  CreateDirectory "$APPDATA\ShareFS"
+
+  IfFileExists "$APPDATA\ShareFS\sharefs.conf" PreserveSharefs 0
+  IfFileExists "$INSTDIR\sharefs.conf" MigrateSharefs InstallConfig
+
+  MigrateSharefs:
+    CopyFiles /SILENT "$INSTDIR\sharefs.conf" "$APPDATA\ShareFS\sharefs.conf"
+    Delete "$INSTDIR\sharefs.conf"
+    DetailPrint "Moved your configuration to $APPDATA\ShareFS\sharefs.conf"
+    Goto ConfigDone
   InstallConfig:
+    SetOutPath "$APPDATA\ShareFS"
     File /oname=sharefs.conf "${WINDOWS_RELEASE_DIR}\sharefs.conf"
-    DetailPrint "Installed default configuration to $INSTDIR\sharefs.conf"
+    SetOutPath "$INSTDIR"
+    DetailPrint "Installed default configuration to $APPDATA\ShareFS\sharefs.conf"
     Goto ConfigDone
   PreserveSharefs:
-    DetailPrint "Preserving existing configuration at $INSTDIR\sharefs.conf"
+    DetailPrint "Preserving existing configuration at $APPDATA\ShareFS\sharefs.conf"
   ConfigDone:
 
   # Set share permissions for Public share
@@ -122,7 +156,7 @@ Section "Core Files" SecCore
   # Registry entries for Add/Remove Programs
   WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "DisplayName" "${PRODUCT_NAME}"
   WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "UninstallString" "$INSTDIR\Uninstall.exe"
-  WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "DisplayIcon" "$INSTDIR\sharefs-admin.exe"
+  WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "DisplayIcon" "$INSTDIR\sharefs.exe"
   WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "DisplayVersion" "${PRODUCT_VERSION}"
   WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "Publisher" "${PRODUCT_PUBLISHER}"
   WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "URLInfoAbout" "${PRODUCT_WEB_SITE}"
@@ -138,7 +172,7 @@ SectionEnd
 
 Section "Start Menu Shortcuts" SecShortcuts
   CreateDirectory "$SMPROGRAMS\${PRODUCT_NAME}"
-  CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\Admin GUI.lnk" "$INSTDIR\sharefs-admin.exe"
+  CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\ShareFS.lnk" "$INSTDIR\sharefs.exe"
   CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
   CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\README.lnk" "$INSTDIR\README.txt"
 SectionEnd
@@ -147,7 +181,7 @@ Section "Install Windows Service" SecService
   DetailPrint "Installing Windows service..."
   
   # Install the service
-  nsExec::ExecToLog '"$INSTDIR\sharefs-service.exe" install'
+  nsExec::ExecToLog '"$INSTDIR\sharefs.exe" service install'
   Pop $0
   
   ${If} $0 == 0
@@ -172,35 +206,41 @@ Section "Start Service" SecStart
   DetailPrint "Starting Windows service..."
   
   # Start the service
-  nsExec::ExecToLog '"$INSTDIR\sharefs-service.exe" start'
+  nsExec::ExecToLog '"$INSTDIR\sharefs.exe" service start'
   Pop $0
   
   ${If} $0 == 0
     DetailPrint "Service started successfully"
   ${Else}
     DetailPrint "Warning: Service start returned code $0"
-    DetailPrint "You can start the service manually from the Admin GUI"
+    DetailPrint "You can turn sharing on from the ShareFS window instead"
   ${EndIf}
 SectionEnd
 
 # Section descriptions
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecCore} "Core server files (required)"
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecCore} "ShareFS itself (required)"
   !insertmacro MUI_DESCRIPTION_TEXT ${SecShortcuts} "Start Menu shortcuts for easy access"
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecService} "Install as Windows service for automatic startup"
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecService} "Keep sharing when nobody is logged in, and start at boot"
   !insertmacro MUI_DESCRIPTION_TEXT ${SecFirewall} "Configure Windows Firewall to allow server traffic"
   !insertmacro MUI_DESCRIPTION_TEXT ${SecStart} "Start the service immediately after installation"
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 
 # Uninstaller section
 Section "Uninstall"
+  # The same all-users context the installer ran in, or $APPDATA below means
+  # the uninstalling user's roaming folder rather than ProgramData, and the
+  # configuration it is meant to remove is left behind.
+  SetShellVarContext all
+  SetRegView 64
+
   # Stop and remove service
-  DetailPrint "Stopping Windows service..."
-  nsExec::ExecToLog '"$INSTDIR\sharefs-service.exe" stop'
+  DetailPrint "Stopping the ShareFS service..."
+  nsExec::ExecToLog '"$INSTDIR\sharefs.exe" service stop'
   Sleep 2000
-  
-  DetailPrint "Removing Windows service..."
-  nsExec::ExecToLog '"$INSTDIR\sharefs-service.exe" uninstall'
+
+  DetailPrint "Removing the ShareFS service..."
+  nsExec::ExecToLog '"$INSTDIR\sharefs.exe" service uninstall'
   
   # Remove firewall rules
   DetailPrint "Removing firewall rules..."
@@ -212,7 +252,8 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\${PRODUCT_NAME}\*.*"
   RMDir "$SMPROGRAMS\${PRODUCT_NAME}"
   
-  # Remove installed files
+  # Remove installed files, including the three from before 0.1.8.
+  Delete "$INSTDIR\sharefs.exe"
   Delete "$INSTDIR\sharefs-server.exe"
   Delete "$INSTDIR\sharefs-service.exe"
   Delete "$INSTDIR\sharefs-admin.exe"
@@ -222,11 +263,12 @@ Section "Uninstall"
   Delete "$INSTDIR\Uninstall.exe"
 
   # Ask user if they want to remove configuration and shares
-  MessageBox MB_YESNO "Remove configuration and shares ($INSTDIR)?$\n$\nChoose 'No' if you plan to reinstall later and want to keep your settings." IDYES RemoveConfig
+  MessageBox MB_YESNO "Remove configuration and shares?$\n$\nThis deletes $INSTDIR and $APPDATA\ShareFS.$\n$\nChoose 'No' if you plan to reinstall later and want to keep your settings." IDYES RemoveConfig
     Goto SkipConfigDelete
   RemoveConfig:
     DetailPrint "Removing configuration and shares..."
     RMDir /r "$INSTDIR"
+    RMDir /r "$APPDATA\ShareFS"
   SkipConfigDelete:
   
   # Remove registry keys
@@ -236,9 +278,9 @@ Section "Uninstall"
   SetAutoClose true
 SectionEnd
 
-# Launch admin GUI function
-Function LaunchAdminGUI
-  Exec "$INSTDIR\sharefs-admin.exe"
+# Open the window after installing.
+Function LaunchShareFS
+  Exec "$INSTDIR\sharefs.exe"
 FunctionEnd
 
 # Installer init function

@@ -1,5 +1,5 @@
 /*
-  ShareFS Server - Admin GUI Control Panel
+  ShareFS Server - Activity Panel
 
   Copyright (C) 2025-2026 Andy Timmins
 
@@ -38,33 +38,53 @@ public:
   void StopServer();
   void RestartServer();
 
-  // Whether the server is currently running, so the toolbar can enable or
-  // disable its transport controls to match.
-  bool IsRunning() const { return m_running; }
+  // Whether ShareFS is sharing at all, however it happens to be doing it, so
+  // the toolbar can enable or disable its transport controls to match.
+  bool IsRunning() const { return m_mode != Mode::Stopped; }
+
+  // Turn background sharing on or off from somewhere other than the tick box,
+  // which is what the first-run dialog does. Reports failure to the log and to
+  // the user, and leaves the tick box showing the truth either way.
+  void SetKeepSharing(bool enabled);
+
+  // Whether background sharing is set up, for the first-run dialog and the
+  // window's close handler.
+  bool KeepSharingEnabled() const;
 
 private:
-  void OnStart(wxCommandEvent &event);
-  void OnStop(wxCommandEvent &event);
-  void OnRestart(wxCommandEvent &event);
+  // How sharing is happening. The user is never asked to choose between these:
+  // they choose whether sharing survives the window closing, and that decides
+  // it. See src/autostart.h.
+  enum class Mode {
+    Stopped,
+    // The server core is running on a thread inside this process, and stops
+    // when the window does.
+    InApp,
+    // A service or launchd agent is running it, and keeps going without us.
+    Background
+  };
+
   void OnClearLog(wxCommandEvent &event);
+  void OnKeepSharing(wxCommandEvent &event);
   void OnEmbeddedLog(wxThreadEvent &event);
   void OnEmbeddedStopped(wxThreadEvent &event);
   void OnTimer(wxTimerEvent &event);
 
   void UpdateStatus();
   void AppendLog(const wxString &text);
-  bool CheckSystemdStatus();
-  bool IsSystemdActive();
-#ifdef _WIN32
-  bool CheckWindowsServiceStatus();
-  bool IsWindowsServiceInstalled();
-  bool StartWindowsService();
-  bool StopWindowsService();
-#endif
+  bool StartInApp();
+  void StopInApp();
+
+  // Ask the operating system what the background copy is doing. Both answers
+  // cost a process on Linux and macOS, so they are cached rather than asked
+  // for on every repaint; PollBackground refreshes them.
+  void PollBackground();
 
   MainFrame *m_frame;
 
-  // State is shown on the toolbar and status bar; this panel is the log.
+  wxStaticText *m_statusLine;
+  wxStaticText *m_statusDetail;
+  wxCheckBox *m_keepSharing;
   wxTextCtrl *m_logView;
 
   // The server runs on a worker thread inside this process; see
@@ -72,11 +92,11 @@ private:
   std::unique_ptr<EmbeddedServer> m_embedded;
 
   wxTimer m_timer;
-  bool m_running = false;
-  bool m_isSystemd = false;
-#ifdef _WIN32
-  bool m_isWindowsService = false;
-#endif
+  Mode m_mode = Mode::Stopped;
+  bool m_backgroundRunning = false;
+  bool m_keepEnabled = false;
+  bool m_autostartSupported = true;
+  int m_tick = 0;
 
   wxDECLARE_EVENT_TABLE();
 };

@@ -1,5 +1,5 @@
 /*
-  ShareFS Server - Admin GUI Main Frame Implementation
+  ShareFS - Main Frame Implementation
 
   Copyright (C) 2025-2026 Andy Timmins
 
@@ -24,12 +24,19 @@
 #include "MimePanel.h"
 #include "ControlPanel.h"
 #include "AboutDialog.h"
+#include "FirstRunDialog.h"
 #include "Icons.h"
 #include "UiHelpers.h"
 #include <wx/aboutdlg.h>
 #include <wx/artprov.h>
 #include <wx/filename.h>
 #include <wx/msgdlg.h>
+#include <wx/utils.h>
+
+extern "C" {
+#include "autostart.h"
+#include "paths.h"
+}
 
 wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
     EVT_MENU(ID_SAVE, MainFrame::OnSave)
@@ -37,6 +44,7 @@ wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
     EVT_MENU(ID_REVERT, MainFrame::OnRevert)
     EVT_MENU(wxID_EXIT, MainFrame::OnExit)
     EVT_MENU(wxID_ABOUT, MainFrame::OnAbout)
+    EVT_MENU(ID_REVEAL_CONFIG, MainFrame::OnRevealConfig)
     EVT_TOOL(ID_START, MainFrame::OnStart)
     EVT_TOOL(ID_STOP, MainFrame::OnStop)
     EVT_BUTTON(ID_SAVE, MainFrame::OnSave)
@@ -80,7 +88,7 @@ MainFrame::MainFrame(const wxString& title)
     m_notebook->AddPage(m_sharesPanel, "Shares");
     m_notebook->AddPage(m_printersPanel, "Printers");
     m_notebook->AddPage(m_mimePanel, "MIME Map");
-    m_notebook->AddPage(m_controlPanel, "Activity");
+    m_notebook->AddPage(m_controlPanel, "Sharing");
 
     // Without this the tab strip sits flush against the toolbar.
     mainSizer->Add(m_notebook, 1, wxEXPAND | wxTOP, ui::kTightGap);
@@ -189,11 +197,15 @@ void MainFrame::BuildMenuBar() {
     fileMenu->Append(ID_APPLY, "&Apply && Restart\tCtrl+Shift+R", "Save configuration and restart server");
     fileMenu->Append(ID_REVERT, "&Revert Changes", "Discard unsaved changes");
     fileMenu->AppendSeparator();
+    // Where the settings live is ShareFS's business, not the user's, but it
+    // should never be a mystery either.
+    fileMenu->Append(ID_REVEAL_CONFIG, "Reveal Configuration &File",
+                     "Show sharefs.conf in the file manager");
+    fileMenu->AppendSeparator();
     fileMenu->Append(wxID_EXIT, "E&xit\tAlt+F4", "Exit application");
     
     wxMenu* helpMenu = new wxMenu;
-    helpMenu->Append(wxID_ABOUT, "&About ShareFS Admin",
-                     "About this application");
+    helpMenu->Append(wxID_ABOUT, "&About ShareFS", "About this application");
     
     wxMenuBar* menuBar = new wxMenuBar;
     menuBar->Append(fileMenu, "&File");
@@ -202,7 +214,7 @@ void MainFrame::BuildMenuBar() {
 }
 
 void MainFrame::UpdateTitle() {
-    wxString title = "ShareFS Admin";
+    wxString title = "ShareFS";
     if (!m_configPath.empty()) {
         wxFileName fn(m_configPath);
         title += " - " + fn.GetFullName();
@@ -246,7 +258,16 @@ void MainFrame::LoadConfig(const std::string& path) {
 
 void MainFrame::SaveConfig() {
     if (m_configPath.empty()) {
-        m_configPath = "sharefs.conf";
+        // Not "./sharefs.conf": that is wherever the app was launched from,
+        // which is not a place the server goes looking. See src/paths.h.
+        char fallback[SFS_PATH_MAX];
+        if (sfs_paths_default_config(fallback, sizeof(fallback)) == 0) {
+            wxFileName fn(wxString::FromUTF8(fallback));
+            sfs_paths_mkdir_p(fn.GetPath().utf8_str());
+            m_configPath = fallback;
+        } else {
+            m_configPath = "sharefs.conf";
+        }
     }
 
     std::string error;
@@ -300,9 +321,9 @@ void MainFrame::OnClose(wxCloseEvent& event) {
         }
     }
     
-    // Stop server if running before exit
-    m_controlPanel->StopServer();
-    
+    // Only the copy running inside this process goes away with the window. A
+    // background one was set up precisely so that it would not, and stopping
+    // it here made the tick box a lie. ~ControlPanel stops the in-process one.
     Destroy();
 }
 
@@ -312,6 +333,73 @@ void MainFrame::OnClose(wxCloseEvent& event) {
 #ifndef SHAREFS_HOMEPAGE
 #define SHAREFS_HOMEPAGE "https://github.com/andrewtimmins/riscos-access-server"
 #endif
+
+// Nothing configured yet. One folder is the whole of setting up a file server,
+// so ask for that and get out of the way.
+void MainFrame::RunFirstRun() {
+    char configPath[SFS_PATH_MAX];
+    if (sfs_paths_default_config(configPath, sizeof(configPath)) != 0) {
+        ui::Notify(this, "ShareFS",
+                   "Could not work out where to keep the settings.");
+        return;
+    }
+
+    char shareDefault[SFS_PATH_MAX];
+    if (sfs_paths_default_share(shareDefault, sizeof(shareDefault)) != 0)
+        shareDefault[0] = '\0';
+
+    FirstRunDialog dlg(this, wxString::FromUTF8(shareDefault),
+                       wxString::FromUTF8(configPath));
+    const bool accepted = (dlg.ShowModal() == wxID_OK);
+
+    // Cancelling still leaves a working configuration behind: the window is
+    // useless without one, and an empty first tab is not an answer to
+    // anything. It simply does not start sharing.
+    wxString folder = accepted ? dlg.Folder() : wxString::FromUTF8(shareDefault);
+    wxString name = accepted ? dlg.ShareName() : wxString("Public");
+    if (folder.empty())
+        folder = wxString::FromUTF8(shareDefault);
+
+    char err[512];
+    if (sfs_paths_write_default_config(configPath, name.utf8_str(),
+                                       folder.utf8_str(), err,
+                                       sizeof(err)) != 0) {
+        ui::Notify(this, "Could not create the configuration",
+                   wxString::FromUTF8(err));
+        return;
+    }
+
+    LoadConfig(configPath);
+    if (!accepted)
+        return;
+
+    if (dlg.KeepSharing())
+        m_controlPanel->SetKeepSharing(true);
+    m_controlPanel->StartServer();
+}
+
+void MainFrame::OnRevealConfig(wxCommandEvent& event) {
+    wxUnusedVar(event);
+
+    const wxString path = wxString::FromUTF8(m_configPath.c_str());
+    if (path.empty() || !wxFileExists(path)) {
+        ui::Notify(this, "Configuration file",
+                   "There is no configuration file yet. Save your settings "
+                   "first and it will be created.");
+        return;
+    }
+
+    // Selecting the file itself where the platform can, so it is obvious which
+    // of several files is the one in use.
+#ifdef __WXOSX__
+    wxExecute("/usr/bin/open -R \"" + path + "\"");
+#elif defined(__WXMSW__)
+    wxExecute("explorer.exe /select,\"" + path + "\"");
+#else
+    wxFileName fn(path);
+    wxExecute("xdg-open \"" + fn.GetPath() + "\"");
+#endif
+}
 
 void MainFrame::OnAbout(wxCommandEvent& event) {
     wxUnusedVar(event);

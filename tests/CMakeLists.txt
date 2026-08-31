@@ -42,7 +42,7 @@ if(Python3_FOUND)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/protocol_security_test.py
                 ${CMAKE_CURRENT_BINARY_DIR}/security_test.conf
-                $<TARGET_FILE:sharefs-server>
+                $<TARGET_FILE:sharefs>
     )
     # Binds the real UDP ports, so it must not run alongside another instance.
     set_tests_properties(protocol_security PROPERTIES RUN_SERIAL TRUE)
@@ -66,7 +66,7 @@ if(Python3_FOUND)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/protocol_listing_test.py
                 ${CMAKE_CURRENT_BINARY_DIR}/listing_test.conf
-                $<TARGET_FILE:sharefs-server>
+                $<TARGET_FILE:sharefs>
     )
     # Binds the same UDP ports as the security test.
     set_tests_properties(protocol_listing PROPERTIES RUN_SERIAL TRUE)

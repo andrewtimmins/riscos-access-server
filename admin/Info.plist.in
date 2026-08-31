@@ -35,6 +35,6 @@
 	  GUI-hosted one appears silently broken.
 	-->
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>ShareFS Admin announces your shared discs and printers to RISC OS machines on your local network, and serves files to them.</string>
+	<string>ShareFS announces your shared discs and printers to RISC OS machines on your local network, and serves files to them.</string>
 </dict>
 </plist>

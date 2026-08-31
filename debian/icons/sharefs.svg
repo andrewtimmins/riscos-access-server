@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The ShareFS application mark: a disc platter over a network-blue field, the
+  shared volume as a RISC OS client sees it.
+
+  The same mark the About dialog draws in code (AboutLogo in
+  admin/src/AboutDialog.cpp), as an SVG, because a .desktop entry needs a file
+  on disc rather than a function. Keep the two in step.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <rect width="48" height="48" rx="8" fill="#2C5F8A"/>
+  <circle cx="24" cy="24" r="16" fill="#F0E8D0"/>
+  <circle cx="24" cy="24" r="4.8" fill="#2C5F8A"/>
+</svg>

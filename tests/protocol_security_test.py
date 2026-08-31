@@ -199,7 +199,9 @@ def main():
     config, binary = sys.argv[1], sys.argv[2]
 
     server = subprocess.Popen(
-        [binary, config], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        [binary, "serve", "--config", config],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     time.sleep(1.0)
     if server.poll() is not None:

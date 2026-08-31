@@ -1,5 +1,5 @@
 /*
-  ShareFS Server - Admin GUI About dialog
+  ShareFS - About dialog
 
   Copyright (C) 2025-2026 Andy Timmins
 
@@ -118,7 +118,7 @@ const CreditGroup kCredits[] = {
 } // namespace
 
 AboutDialog::AboutDialog(wxWindow *parent)
-    : wxDialog(parent, wxID_ANY, "About ShareFS Admin", wxDefaultPosition,
+    : wxDialog(parent, wxID_ANY, "About ShareFS", wxDefaultPosition,
                wxDefaultSize, wxDEFAULT_DIALOG_STYLE | wxCLOSE_BOX) {
   BuildUi();
   Fit();
@@ -146,7 +146,9 @@ void AboutDialog::BuildUi() {
   auto *title = new wxStaticText(this, wxID_ANY, "ShareFS");
   title->SetFont(titleFont);
 
-  auto *edition = new wxStaticText(this, wxID_ANY, "Admin");
+  // There is one product, so no edition line: it used to say "Admin", which
+  // implied a separate program from the server rather than the same one.
+  auto *edition = new wxStaticText(this, wxID_ANY, "File sharing for RISC OS");
   edition->SetFont(editionFont);
   edition->SetForegroundColour(muted);
 
@@ -164,7 +166,7 @@ void AboutDialog::BuildUi() {
 
   auto *tagline = new wxStaticText(
       this, wxID_ANY,
-      "Configuration and control for an Acorn ShareFS-compatible file server");
+      "An Acorn ShareFS-compatible file server for RISC OS machines");
 
   auto *creditsIntro = new wxStaticText(this, wxID_ANY, "Brought to you by:");
 

@@ -1,5 +1,5 @@
 /*
-  ShareFS Server - Admin GUI Config I/O Header
+  ShareFS - Config I/O Header
 
   Copyright (C) 2025-2026 Andy Timmins
 

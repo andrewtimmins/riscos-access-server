@@ -1,12 +1,12 @@
 [Unit]
-Description=ShareFS Server
+Description=ShareFS file sharing for RISC OS clients
 Documentation=https://github.com/andrewtimmins/sharefs-server
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/sharefs-server
+ExecStart=/usr/bin/sharefs serve
 Restart=on-failure
 RestartSec=5
 

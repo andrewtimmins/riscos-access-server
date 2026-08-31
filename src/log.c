@@ -19,6 +19,8 @@
 
 #include "log.h"
 
+#include "paths.h"
+
 #include <errno.h>
 #include <stdarg.h>
 #include <string.h>
@@ -63,8 +65,13 @@ const char *sfs_log_get_path(void) {
 }
 
 // Create the directory a path lives in, best effort.
+//
+// Every missing level, not just the last one: the macOS fallback is
+// ~/Library/Logs/ShareFS, and on a machine where no application has ever
+// written a log there is no Logs directory either, so creating one level left
+// the server with nowhere to log and a warning saying so.
 static void ensure_parent_dir(const char *path) {
-  char dir[1024];
+  char dir[SFS_PATH_MAX];
   snprintf(dir, sizeof(dir), "%s", path);
 
   char *slash = strrchr(dir, '/');
@@ -77,19 +84,15 @@ static void ensure_parent_dir(const char *path) {
     return;
   *slash = '\0';
 
-#ifdef _WIN32
-  _mkdir(dir);
-#else
-  struct stat st;
-  if (stat(dir, &st) != 0)
-    mkdir(dir, 0755);
-#endif
+  sfs_paths_mkdir_p(dir);
 }
 
 // Fill `out` with the preferred log path for this platform, and `fallback`
 // with the one to use when the preferred path is not writable.
 static void default_log_paths(char *out, size_t out_sz, char *fallback,
                               size_t fb_sz) {
+  // Both are always written, so a caller that only wants one can pass a
+  // throwaway buffer for the other.
 #ifdef _WIN32
   // Issue #16: this used to be hard-coded to C:\ShareFS, which is not an
   // acceptable place for a Windows service to write. Use ProgramData, and
@@ -125,6 +128,22 @@ static void default_log_paths(char *out, size_t out_sz, char *fallback,
   snprintf(fallback, fb_sz, "/tmp/sharefs.log");
 #endif
 #endif
+}
+
+void sfs_log_default_paths(char *preferred, size_t preferred_sz, char *fallback,
+                           size_t fallback_sz) {
+  char spare_preferred[SFS_PATH_MAX];
+  char spare_fallback[SFS_PATH_MAX];
+
+  if (!preferred) {
+    preferred = spare_preferred;
+    preferred_sz = sizeof(spare_preferred);
+  }
+  if (!fallback) {
+    fallback = spare_fallback;
+    fallback_sz = sizeof(spare_fallback);
+  }
+  default_log_paths(preferred, preferred_sz, fallback, fallback_sz);
 }
 
 int sfs_log_init(void) {

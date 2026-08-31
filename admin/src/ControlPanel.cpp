@@ -1,5 +1,5 @@
 /*
-  ShareFS Server - Admin GUI Control Panel
+  ShareFS Server - Activity Panel
 
   Copyright (C) 2025-2026 Andy Timmins
 
@@ -17,52 +17,72 @@
   along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+// This panel used to report which mechanism was running the server - a systemd
+// unit, a Windows service, or a thread in this process - and had a copy of the
+// code for driving each of them. The user was being shown a deployment
+// mechanism and asked to care about it.
+//
+// Now there is one question, "keep sharing when this window is closed", and
+// the platform-specific half lives in src/autostart.c behind an interface that
+// answers it. What is left here is a status line, a tick box, and the log.
+
 #include "ControlPanel.h"
 #include "EmbeddedServer.h"
 #include "MainFrame.h"
 #include "UiHelpers.h"
-#include <wx/filedlg.h>
-#include <wx/filename.h>
-#include <wx/stdpaths.h>
-#include <wx/txtstrm.h>
 
-#ifdef _WIN32
-#include <windows.h>
-#define SHAREFS_SERVICE_NAME TEXT("ShareFSServer")
-#endif
+extern "C" {
+#include "autostart.h"
+}
 
 // Prefixed to avoid colliding with the toolbar ids declared in MainFrame.h.
 enum {
-  CP_ID_START = wxID_HIGHEST + 400,
-  CP_ID_STOP,
-  CP_ID_RESTART,
-  CP_ID_CLEAR_LOG,
+  CP_ID_CLEAR_LOG = wxID_HIGHEST + 400,
+  CP_ID_KEEP_SHARING,
   CP_ID_TIMER
 };
 
 wxBEGIN_EVENT_TABLE(ControlPanel, wxPanel)
-    EVT_BUTTON(CP_ID_START, ControlPanel::OnStart) EVT_BUTTON(CP_ID_STOP,
-                                                           ControlPanel::OnStop)
-        EVT_BUTTON(CP_ID_RESTART, ControlPanel::OnRestart)
-            EVT_BUTTON(CP_ID_CLEAR_LOG, ControlPanel::OnClearLog)
-                        EVT_TIMER(CP_ID_TIMER, ControlPanel::OnTimer)
-                            wxEND_EVENT_TABLE()
+    EVT_BUTTON(CP_ID_CLEAR_LOG, ControlPanel::OnClearLog)
+    EVT_CHECKBOX(CP_ID_KEEP_SHARING, ControlPanel::OnKeepSharing)
+    EVT_TIMER(CP_ID_TIMER, ControlPanel::OnTimer)
+wxEND_EVENT_TABLE()
 
-                                ControlPanel::ControlPanel(wxWindow *parent,
-                                                           MainFrame *frame)
+ControlPanel::ControlPanel(wxWindow *parent, MainFrame *frame)
     : wxPanel(parent), m_frame(frame), m_timer(this, CP_ID_TIMER) {
   wxBoxSizer *mainSizer = new wxBoxSizer(wxVERTICAL);
 
-  wxStaticText *title = new wxStaticText(this, wxID_ANY, "Server Activity");
+  wxStaticText *title = new wxStaticText(this, wxID_ANY, "Sharing");
   ui::StyleSectionTitle(title);
   mainSizer->Add(title, 0, wxLEFT | wxRIGHT | wxTOP, ui::kPagePad);
   mainSizer->AddSpacer(4);
 
-  wxStaticText *desc = new wxStaticText(
-      this, wxID_ANY,
-      "Live output from the server. Start and stop it from the toolbar.");
-  desc->SetForegroundColour(ui::MutedText(this));
-  mainSizer->Add(desc, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, ui::kPagePad);
+  m_statusLine = new wxStaticText(this, wxID_ANY, "Not sharing");
+  wxFont statusFont = m_statusLine->GetFont();
+  statusFont.MakeBold();
+  m_statusLine->SetFont(statusFont);
+  mainSizer->Add(m_statusLine, 0, wxLEFT | wxRIGHT, ui::kPagePad);
+
+  m_statusDetail = new wxStaticText(this, wxID_ANY, "");
+  m_statusDetail->SetForegroundColour(ui::MutedText(this));
+  mainSizer->Add(m_statusDetail, 0, wxEXPAND | wxLEFT | wxRIGHT, ui::kPagePad);
+  mainSizer->AddSpacer(ui::kTightGap);
+
+  m_keepSharing =
+      new wxCheckBox(this, CP_ID_KEEP_SHARING,
+                     "Keep sharing when this window is closed");
+  m_keepSharing->SetToolTip(
+      wxString::Format("ShareFS sets this up using %s.",
+                       sfs_autostart_mechanism()));
+  mainSizer->Add(m_keepSharing, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM,
+                 ui::kPagePad);
+
+  if (sfs_autostart_query() == SFS_AUTOSTART_UNSUPPORTED) {
+    m_autostartSupported = false;
+    m_keepSharing->Enable(false);
+    m_keepSharing->SetToolTip("ShareFS cannot manage background sharing on "
+                              "this system.");
+  }
 
   wxBoxSizer *logHeader = new wxBoxSizer(wxHORIZONTAL);
   logHeader->Add(new wxStaticText(this, wxID_ANY, "Server Log"), 1,
@@ -78,8 +98,8 @@ wxBEGIN_EVENT_TABLE(ControlPanel, wxPanel)
   wxFont monoFont(10, wxFONTFAMILY_TELETYPE, wxFONTSTYLE_NORMAL,
                   wxFONTWEIGHT_NORMAL);
   m_logView->SetFont(monoFont);
-  mainSizer->Add(m_logView, 1,
-                 wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, ui::kPagePad);
+  mainSizer->Add(m_logView, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM,
+                 ui::kPagePad);
 
   SetSizer(mainSizer);
 
@@ -88,61 +108,73 @@ wxBEGIN_EVENT_TABLE(ControlPanel, wxPanel)
   Bind(EVT_EMBEDDED_SERVER_LOG, &ControlPanel::OnEmbeddedLog, this);
   Bind(EVT_EMBEDDED_SERVER_STOPPED, &ControlPanel::OnEmbeddedStopped, this);
 
-  AppendLog("[ADMIN] Ready. Click Start to launch the server.\n");
-
-  // Initial status check
+  PollBackground();
   UpdateStatus();
-  m_timer.Start(1000); // Check status every second
+  m_timer.Start(1000);
 }
 
-ControlPanel::~ControlPanel() { StopServer(); }
+// Only the in-process server is ours to shut down. A background one is
+// supposed to outlive the window, which is the whole point of it.
+ControlPanel::~ControlPanel() { StopInApp(); }
 
 void ControlPanel::RefreshFromConfig() { UpdateStatus(); }
 
-void ControlPanel::UpdateStatus() {
-  const bool localRunning = (m_embedded && m_embedded->IsRunning());
-  const bool systemdRunning = CheckSystemdStatus();
-#ifdef _WIN32
-  const bool windowsServiceRunning = CheckWindowsServiceStatus();
-#else
-  const bool windowsServiceRunning = false;
-#endif
+bool ControlPanel::KeepSharingEnabled() const { return m_keepEnabled; }
 
-  wxString label;
-  if (localRunning) {
-    label = "Running";
-    m_running = true;
-    m_isSystemd = false;
-#ifdef _WIN32
-    m_isWindowsService = false;
-#endif
-  } else if (systemdRunning) {
-    label = "Running (System Service)";
-    m_running = true;
-    m_isSystemd = true;
-#ifdef _WIN32
-    m_isWindowsService = false;
-#endif
-  } else if (windowsServiceRunning) {
-    label = "Running (Windows Service)";
-    m_running = true;
-    m_isSystemd = false;
-#ifdef _WIN32
-    m_isWindowsService = true;
-#endif
-  } else {
-    label = "Stopped";
-    m_running = false;
-    m_isSystemd = false;
-#ifdef _WIN32
-    m_isWindowsService = false;
-#endif
+void ControlPanel::PollBackground() {
+  const sfs_autostart_state state = sfs_autostart_query();
+  m_autostartSupported = (state != SFS_AUTOSTART_UNSUPPORTED);
+  m_keepEnabled = (state == SFS_AUTOSTART_ENABLED);
+  m_backgroundRunning = m_autostartSupported ? (sfs_autostart_is_running() != 0)
+                                             : false;
+}
+
+void ControlPanel::UpdateStatus() {
+  const bool background = m_backgroundRunning;
+  const bool inApp = (m_embedded && m_embedded->IsRunning());
+
+  if (background)
+    m_mode = Mode::Background;
+  else if (inApp)
+    m_mode = Mode::InApp;
+  else
+    m_mode = Mode::Stopped;
+
+  wxString line, detail;
+  switch (m_mode) {
+  case Mode::Background:
+    line = "Sharing";
+    detail = "Running in the background, so it keeps going when this window is "
+             "closed.";
+    break;
+  case Mode::InApp:
+    line = "Sharing";
+    detail = "Running in this window. Sharing stops when you close it.";
+    break;
+  case Mode::Stopped:
+    line = "Not sharing";
+    detail = "Press Start on the toolbar to share the folders on the Shares "
+             "tab.";
+    break;
   }
 
-  // The toolbar and status bar are the only places state is shown now.
+  m_statusLine->SetLabel(line);
+  m_statusLine->SetForegroundColour(m_mode == Mode::Stopped
+                                        ? ui::MutedText(this)
+                                        : ui::StatusRunning());
+  m_statusDetail->SetLabel(detail);
+  m_statusDetail->Wrap(GetClientSize().GetWidth() - 2 * ui::kPagePad);
+
+  // The tick box shows what the system is actually set to, not what was last
+  // clicked, so an enable that silently failed cannot leave it lying.
+  if (m_keepSharing->IsEnabled())
+    m_keepSharing->SetValue(KeepSharingEnabled());
+
+  Layout();
+
   if (m_frame) {
-    m_frame->SetServerStatus(label, m_running);
-    m_frame->SetTransportState(m_running);
+    m_frame->SetServerStatus(line, m_mode != Mode::Stopped);
+    m_frame->SetTransportState(m_mode != Mode::Stopped);
   }
 }
 
@@ -155,7 +187,7 @@ static wxColour LogLineColour(const wxString &line) {
     return ui::Danger();
   if (line.Contains("Warning") || line.Contains("WARN"))
     return ui::Warning();
-  if (line.StartsWith("[ADMIN]"))
+  if (line.StartsWith("[SHAREFS]"))
     return ui::Neutral();
   return wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOWTEXT);
 }
@@ -164,7 +196,8 @@ void ControlPanel::AppendLog(const wxString &text) {
   // Trim oldest lines when the log grows too large
   if (m_logView->GetNumberOfLines() > 5000) {
     long trimPos = m_logView->XYToPosition(0, 1000);
-    if (trimPos > 0) m_logView->Remove(0, trimPos);
+    if (trimPos > 0)
+      m_logView->Remove(0, trimPos);
   }
 
   // Style each line individually; a single write may carry several.
@@ -186,283 +219,133 @@ void ControlPanel::AppendLog(const wxString &text) {
   m_logView->ShowPosition(m_logView->GetLastPosition());
 }
 
-bool ControlPanel::CheckSystemdStatus() {
-#ifdef __WXGTK__
-  // silent check, returns 0 if active
-  return wxExecute("systemctl is-active --quiet sharefs",
-                   wxEXEC_SYNC | wxEXEC_NOEVENTS) == 0;
-#else
-  return false;
-#endif
-}
-
-#ifdef _WIN32
-bool ControlPanel::CheckWindowsServiceStatus() {
-  SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);
-  if (!scm)
-    return false;
-
-  SC_HANDLE service =
-      OpenService(scm, SHAREFS_SERVICE_NAME, SERVICE_QUERY_STATUS);
-  if (!service) {
-    CloseServiceHandle(scm);
-    return false;
-  }
-
-  SERVICE_STATUS status;
-  bool isRunning = false;
-  if (QueryServiceStatus(service, &status)) {
-    isRunning = (status.dwCurrentState == SERVICE_RUNNING);
-  }
-
-  CloseServiceHandle(service);
-  CloseServiceHandle(scm);
-  return isRunning;
-}
-
-bool ControlPanel::IsWindowsServiceInstalled() {
-  SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);
-  if (!scm)
-    return false;
-
-  SC_HANDLE service =
-      OpenService(scm, SHAREFS_SERVICE_NAME, SERVICE_QUERY_STATUS);
-  bool installed = (service != NULL);
-
-  if (service)
-    CloseServiceHandle(service);
-  CloseServiceHandle(scm);
-  return installed;
-}
-
-bool ControlPanel::StartWindowsService() {
-  SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);
-  if (!scm)
-    return false;
-
-  SC_HANDLE service =
-      OpenService(scm, SHAREFS_SERVICE_NAME, SERVICE_START | SERVICE_QUERY_STATUS);
-  if (!service) {
-    CloseServiceHandle(scm);
-    return false;
-  }
-
-  bool success = false;
-  if (StartService(service, 0, NULL) || GetLastError() == ERROR_SERVICE_ALREADY_RUNNING) {
-    // Poll for running state, yielding to keep the UI responsive
-    SERVICE_STATUS status;
-    for (int i = 0; i < 50; ++i) { // up to ~10s
-      if (QueryServiceStatus(service, &status) &&
-          status.dwCurrentState == SERVICE_RUNNING) {
-        success = true;
-        break;
-      }
-      wxSafeYield();
-      Sleep(200);
-    }
-  }
-
-  CloseServiceHandle(service);
-  CloseServiceHandle(scm);
-  return success;
-}
-
-bool ControlPanel::StopWindowsService() {
-  SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);
-  if (!scm)
-    return false;
-
-  SC_HANDLE service =
-      OpenService(scm, SHAREFS_SERVICE_NAME, SERVICE_STOP | SERVICE_QUERY_STATUS);
-  if (!service) {
-    CloseServiceHandle(scm);
-    return false;
-  }
-
-  SERVICE_STATUS status;
-  bool success = false;
-
-  if (ControlService(service, SERVICE_CONTROL_STOP, &status) ||
-      GetLastError() == ERROR_SERVICE_NOT_ACTIVE) {
-    // Poll for stopped state, yielding to keep the UI responsive
-    for (int i = 0; i < 50; ++i) { // up to ~10s
-      if (QueryServiceStatus(service, &status) &&
-          status.dwCurrentState == SERVICE_STOPPED) {
-        success = true;
-        break;
-      }
-      wxSafeYield();
-      Sleep(200);
-    }
-  }
-
-  CloseServiceHandle(service);
-  CloseServiceHandle(scm);
-  return success;
-}
-#endif
-
-bool ControlPanel::IsSystemdActive() { return m_isSystemd; }
-
-void ControlPanel::OnStart(wxCommandEvent &event) {
-  wxUnusedVar(event);
-  StartServer();
-}
-
-void ControlPanel::StartServer() {
-  if (m_running)
-    return;
-
-    // Check if Windows service is available and try to start that way first
-#ifdef _WIN32
-  if (IsWindowsServiceInstalled()) {
-    AppendLog("[ADMIN] Attempting to start Windows service...\n");
-    if (StartWindowsService()) {
-      AppendLog("[ADMIN] Windows service started.\n");
-      UpdateStatus();
-      return;
-    }
-    AppendLog("[ADMIN] Windows service start failed. Falling back to local "
-              "process.\n");
-  }
-#endif
-
-  // Check if systemd is available and try to start that way first on Linux
-#ifdef __WXGTK__
-  if (wxExecute("systemctl list-unit-files sharefs.service",
-                wxEXEC_SYNC | wxEXEC_NOEVENTS) == 0) {
-    AppendLog("[ADMIN] Attempting to start system service...\n");
-    wxString display, waylandDisplay;
-    if ((!wxGetEnv("DISPLAY", &display) || display.empty()) &&
-        (!wxGetEnv("WAYLAND_DISPLAY", &waylandDisplay) || waylandDisplay.empty())) {
-      AppendLog("[WARN] No graphical display detected; pkexec elevation may fail.\n");
-    }
-    long ret =
-        wxExecute("pkexec systemctl start sharefs", wxEXEC_SYNC);
-    if (ret == 0 || CheckSystemdStatus()) {
-      AppendLog("[ADMIN] System service started.\n");
-      UpdateStatus();
-      return;
-    }
-    AppendLog("[ADMIN] System service start failed. Falling back to local "
-              "process.\n");
-  }
-#endif
-
-  const wxString config = m_frame->GetConfigPath();
-
+bool ControlPanel::StartInApp() {
+  const wxString config = m_frame ? m_frame->GetConfigPath() : wxString();
   if (config.empty()) {
-    AppendLog("[ERROR] No configuration file specified.\n");
-    return;
+    AppendLog("[ERROR] No configuration file loaded.\n");
+    return false;
   }
 
-  // Run the server inside this process rather than spawning sharefs-server.
+  // Run the server inside this process rather than spawning a second binary.
   // The status is then a fact rather than a guess, log lines arrive directly,
-  // and there is no binary to go looking for.
+  // and there is no executable to go looking for.
   if (!m_embedded)
     m_embedded.reset(new EmbeddedServer(this));
 
   wxString error;
   if (!m_embedded->Start(config, error)) {
     AppendLog("[ERROR] " + error + "\n");
-    UpdateStatus();
-    return;
+    return false;
   }
-
-  m_running = true;
-  m_isSystemd = false;
-#ifdef _WIN32
-  m_isWindowsService = false;
-#endif
-  AppendLog("[ADMIN] Server started (in-process).\n");
-  UpdateStatus();
+  AppendLog("[SHAREFS] Sharing started.\n");
+  return true;
 }
 
-void ControlPanel::OnStop(wxCommandEvent &event) {
-  wxUnusedVar(event);
-  StopServer();
-}
-
-void ControlPanel::StopServer() {
-  if (!m_running)
-    return;
-
-#ifdef _WIN32
-  if (m_isWindowsService) {
-    AppendLog("[ADMIN] Stopping Windows service...\n");
-    if (StopWindowsService()) {
-      AppendLog("[ADMIN] Windows service stopped.\n");
-    } else {
-      AppendLog("[ADMIN] Failed to stop Windows service.\n");
-    }
-    UpdateStatus();
-    return;
-  }
-#endif
-
-  if (m_isSystemd) {
-    AppendLog("[ADMIN] Stopping system service...\n");
-#ifdef __WXGTK__
-    long ret =
-        wxExecute("pkexec systemctl stop sharefs", wxEXEC_SYNC);
-    if (ret == 0) {
-      AppendLog("[ADMIN] System service stopped.\n");
-    } else {
-      AppendLog("[ADMIN] Failed to stop system service.\n");
-    }
-#endif
-    UpdateStatus();
-    return;
-  }
-
+void ControlPanel::StopInApp() {
   if (!m_embedded || !m_embedded->IsRunning())
     return;
-
-  AppendLog("[ADMIN] Stopping server...\n");
-
   // Blocks until the server thread has unwound and released its sockets, so a
   // restart immediately afterwards can bind them again.
   m_embedded->Stop();
+}
 
-  m_running = false;
-  AppendLog("[ADMIN] Server stopped.\n");
+void ControlPanel::StartServer() {
+  PollBackground();
+  UpdateStatus();
+  if (m_mode != Mode::Stopped)
+    return;
+
+  // Where sharing is meant to survive the window, start it there, so the
+  // toolbar's Start does the same thing the tick box promises.
+  if (KeepSharingEnabled()) {
+    char err[512];
+    if (sfs_autostart_start_now(err, sizeof(err)) == 0) {
+      AppendLog("[SHAREFS] Sharing started in the background.\n");
+      PollBackground();
+      UpdateStatus();
+      return;
+    }
+    AppendLog(wxString("[ERROR] ") + err + "\n");
+    AppendLog("[SHAREFS] Sharing in this window instead.\n");
+  }
+
+  StartInApp();
   UpdateStatus();
 }
 
-void ControlPanel::OnRestart(wxCommandEvent &event) {
-  wxUnusedVar(event);
-  RestartServer();
+void ControlPanel::StopServer() {
+  PollBackground();
+  UpdateStatus();
+
+  if (m_mode == Mode::Background) {
+    char err[512];
+    AppendLog("[SHAREFS] Stopping the background copy...\n");
+    if (sfs_autostart_stop_now(err, sizeof(err)) != 0)
+      AppendLog(wxString("[ERROR] ") + err + "\n");
+    PollBackground();
+    UpdateStatus();
+    return;
+  }
+
+  if (m_mode == Mode::InApp) {
+    AppendLog("[SHAREFS] Stopping...\n");
+    StopInApp();
+    AppendLog("[SHAREFS] Sharing stopped.\n");
+    UpdateStatus();
+  }
 }
 
 void ControlPanel::RestartServer() {
-#ifdef _WIN32
-  if (m_isWindowsService) {
-    AppendLog("[ADMIN] Restarting Windows service...\n");
-    StopWindowsService();
-    wxMilliSleep(500);
-    if (StartWindowsService()) {
-      wxMilliSleep(500);
-      UpdateStatus();
-    } else {
-      AppendLog("[ADMIN] Failed to restart Windows service.\n");
-      UpdateStatus();
-    }
+  const bool wasRunning = (m_mode != Mode::Stopped);
+  StopServer();
+  if (!wasRunning)
+    return;
+  // The sockets are released synchronously in both paths, but a background
+  // service takes a moment to report itself stopped.
+  wxMilliSleep(500);
+  StartServer();
+}
+
+void ControlPanel::SetKeepSharing(bool enabled) {
+  if (!m_keepSharing->IsEnabled())
+    return;
+
+  // Both copies would bind the same UDP ports, so the one that is running has
+  // to let go before the other starts. Doing that here is what lets the user
+  // treat this as a single tick box.
+  const bool wasSharing = (m_mode != Mode::Stopped);
+
+  if (enabled)
+    StopInApp();
+  else if (m_backgroundRunning) {
+    char stopErr[512];
+    sfs_autostart_stop_now(stopErr, sizeof(stopErr));
+  }
+
+  char err[512];
+  if (sfs_autostart_set(enabled ? 1 : 0, err, sizeof(err)) != 0) {
+    AppendLog(wxString("[ERROR] ") + err + "\n");
+    ui::Notify(this, "Background sharing", err);
+    PollBackground();
+    UpdateStatus();
     return;
   }
-#endif
 
-  if (m_isSystemd) {
-    AppendLog("[ADMIN] Restarting system service...\n");
-#ifdef __WXGTK__
-    wxExecute("pkexec systemctl restart sharefs", wxEXEC_SYNC);
-#endif
-    UpdateStatus(); // timer will confirm state shortly
-  } else {
-    StopServer();
-    wxMilliSleep(500);
-    wxCommandEvent dummy;
-    OnStart(dummy);
-  }
+  AppendLog(enabled ? "[SHAREFS] Sharing will now keep going in the "
+                      "background.\n"
+                    : "[SHAREFS] Sharing now stops when this window closes.\n");
+
+  // Enabling starts the background copy itself; disabling leaves nothing
+  // running, so put sharing back the way the user had it.
+  if (!enabled && wasSharing)
+    StartInApp();
+
+  PollBackground();
+  UpdateStatus();
+}
+
+void ControlPanel::OnKeepSharing(wxCommandEvent &event) {
+  SetKeepSharing(event.IsChecked());
 }
 
 void ControlPanel::OnClearLog(wxCommandEvent &event) {
@@ -478,20 +361,15 @@ void ControlPanel::OnEmbeddedLog(wxThreadEvent &event) {
 // The server thread has finished, whether we asked it to or not.
 void ControlPanel::OnEmbeddedStopped(wxThreadEvent &event) {
   wxUnusedVar(event);
-  m_running = false;
   UpdateStatus();
 }
 
 void ControlPanel::OnTimer(wxTimerEvent &event) {
   wxUnusedVar(event);
-  if (m_running && m_isSystemd) {
-    // Periodically verify systemd is still running
-    if (!CheckSystemdStatus()) {
-      UpdateStatus(); // Will detect stopped state
-    }
-  } else if (!m_running) {
-    // Periodically check whether a system service started it behind our back.
-    UpdateStatus();
-  }
-  // Note: UpdateStatus calls CheckSystemdStatus appropriately
+  // Asking the operating system costs a process, so do that every third tick
+  // and repaint from the cache in between. This is what notices a background
+  // copy being started or stopped from outside this window.
+  if (++m_tick % 3 == 0)
+    PollBackground();
+  UpdateStatus();
 }

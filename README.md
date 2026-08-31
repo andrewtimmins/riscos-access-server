@@ -1,9 +1,9 @@
-# ShareFS Server
+# ShareFS
 
 **Author:** Andy Timmins  
 **License:** GPL-3.0-only
 
-ShareFS Server is a C11 implementation of an Acorn ShareFS-compatible server for Linux, macOS and Windows. It allows modern computers to share files with RISC OS machines over a local network using the native ShareFS protocol.
+ShareFS is a C11 implementation of an Acorn ShareFS-compatible server for Linux, macOS and Windows. It allows modern computers to share files with RISC OS machines over a local network using the native ShareFS protocol.
 
 ## Features
 
@@ -11,8 +11,30 @@ ShareFS Server is a C11 implementation of an Acorn ShareFS-compatible server for
 - **Freeway Broadcasts** - Automatic share discovery by RISC OS clients (port 32770)
 - **Access+ Authentication** - Password-protected shares (port 32771)
 - **RISC OS Filetype Preservation** - Via `,xxx` suffixes or automatic MIME mapping
-- **Admin GUI** - wxWidgets-based **ShareFS Admin** interface for easy configuration and server control, which can host the server itself
+- **One program** - `sharefs` is the window, the server and the background service, chosen by what you ask it to do
 - **Cross-Platform** - Native Linux (amd64, arm64), macOS (universal: Apple Silicon and Intel) and Windows (x64, arm64) builds
+
+## One program, several modes
+
+There is a single executable, `sharefs` (`ShareFS.app` on macOS, `sharefs.exe`
+on Windows). Run it with no arguments and it opens its window. Give it a
+command and it does that instead:
+
+| Command | What it does |
+|---------|--------------|
+| `sharefs` | Open the window |
+| `sharefs serve` | Share in the foreground until stopped |
+| `sharefs status` | Where the configuration is, what is running |
+| `sharefs config path` | Print the configuration file in use |
+| `sharefs config search` | Print every location searched, marking the one in use |
+| `sharefs config create` | Write a starter configuration |
+| `sharefs autostart on\|off` | Keep sharing when nothing is open |
+| `sharefs service install\|start\|stop\|uninstall` | The Windows service |
+
+Versions up to 0.1.7 shipped three executables: `sharefs-server`,
+`sharefs-service` and `sharefs-admin`. On Linux and macOS the old names are
+installed as links to `sharefs` and keep working; `sharefs-server` still serves
+headlessly. On Windows the installer removes them.
 
 ---
 
@@ -25,31 +47,44 @@ ShareFS Server is a C11 implementation of an Acorn ShareFS-compatible server for
    ```bash
    sudo apt install ./sharefs-server_*.deb
    ```
-3. **That's it!** The server starts automatically as a system service.
-   - **Configure:** Run `sharefs-admin` (or edit `/etc/sharefs.conf`)
-   - **Status:** `sudo systemctl status sharefs`
+3. **That's it!** Sharing starts automatically as a system service, and
+   **ShareFS** appears in your applications menu.
+   - The installer adds you to the `sharefs-admin` group so the window can save
+     settings and start and stop the service. **Log out and back in once**, or
+     that group membership is not yet in effect.
+   - **Status:** `sharefs status`, or `sudo systemctl status sharefs`
 
 ### macOS (Apple Silicon and Intel)
 
-1. Download `sharefs-server_*-macos-universal.zip` from the release assets. One
-   download covers both Apple Silicon and Intel; the binaries are universal.
-2. Unpack it and drag `sharefs-admin.app` to Applications, or run
-   `./sharefs-server` from the unpacked folder.
-3. The first time it runs, macOS asks for **Local Network** access. Allow it,
-   or RISC OS machines will not see your shares.
-4. The app is signed ad-hoc rather than notarised, so the first launch needs
-   right-click then **Open**, or `xattr -dr com.apple.quarantine sharefs-admin.app`.
+1. Download `sharefs-server_*-macos-universal.dmg` from the release assets. One
+   download covers both Apple Silicon and Intel.
+2. Open it and drag **ShareFS** to Applications. That is the whole product: the
+   window, the server and the command line are one app.
+3. The first time it runs it asks which folder to share, then starts sharing.
+4. macOS asks for **Local Network** access. Allow it, or RISC OS machines will
+   not see your shares.
+5. The app is signed ad-hoc rather than notarised, so the first launch needs
+   right-click then **Open**, or
+   `xattr -dr com.apple.quarantine /Applications/ShareFS.app`.
 
-Configuration lives at `/opt/homebrew/etc/sharefs.conf`, `/usr/local/etc/sharefs.conf`
-or `/etc/sharefs.conf`, whichever exists; the log goes to
-`~/Library/Logs/ShareFS/sharefs.log` unless `log_file` says otherwise.
+Settings are kept in `~/Library/Application Support/ShareFS/sharefs.conf`, so
+nothing needs `sudo`; **File → Reveal Configuration File** shows it. The log
+goes to `~/Library/Logs/ShareFS/sharefs.log` unless `log_file` says otherwise.
 
 ### Windows
 
-1. Download the Windows zip archive (`sharefs-server_*.zip` for x64, or `sharefs-server_*-arm64.zip` for Windows on ARM) from the GitHub release assets.
-2. Extract it to a folder.
-3. Run `sharefs-server.exe` (Server) or `sharefs-admin.exe` (GUI).
-   - **Note:** You likely need to allow the application through Windows Firewall (Ports 32770, 32771, 49171 UDP).
+1. Download the installer (`sharefs-server_*-setup.exe`), or the zip archive
+   (`sharefs-server_*.zip` for x64, `sharefs-server_*-arm64.zip` for Windows on
+   ARM) if you would rather not install anything.
+2. The installer adds firewall rules, installs the service and puts **ShareFS**
+   in the Start Menu. From the zip, run `sharefs.exe`.
+   - **From the zip:** you need to allow ShareFS through Windows Firewall
+     yourself (UDP 32770, 32771 and 49171), or run
+     `configure-firewall-windows.bat` as an administrator.
+
+`sharefs.exe` is both the window and the command line. Double-click it for the
+window; from a command prompt, `sharefs status` and the rest work as listed
+above.
 
 ---
 
@@ -163,26 +198,29 @@ There is no single `./build.sh` flag for both Linux arches. Use one of these app
 
 ### Building for macOS
 
-`build-macos.sh` builds a single-architecture slice, bundles the libraries the
-admin GUI needs into the `.app` so it runs without Homebrew, and can fuse two
-slices into a universal build.
+`build-macos.sh` builds a single-architecture slice, bundles the libraries
+`ShareFS.app` needs so it runs without Homebrew, and can fuse two slices into a
+universal build. What ships is `ShareFS.app` and nothing else: the command line
+is inside it at `Contents/MacOS/ShareFS`.
 
 ```bash
 brew install cmake wxwidgets
 ./build-macos.sh                     # slice for this machine's architecture
-./build-macos.sh --arch arm64 --zip  # slice plus a zip
+./build-macos.sh --arch arm64 --dmg  # slice plus a disk image
 ```
 
-For a universal release both slices are needed. The server has no
-dependencies, but the admin GUI links wxWidgets, which Homebrew ships
-per-architecture only, so each slice must be built against a Homebrew matching
-its own architecture:
+For a universal release both slices are needed. wxWidgets is Homebrew-only and
+per-architecture, so each slice must be built against a Homebrew matching its
+own architecture:
 
 ```bash
-./build-macos.sh --arch arm64        # against /opt/homebrew
-./build-macos.sh --arch x86_64       # against /usr/local (Intel Homebrew)
-./build-macos.sh --fuse --zip        # lipo both into releases/macos
+./build-macos.sh --arch arm64          # against /opt/homebrew
+./build-macos.sh --arch x86_64         # against /usr/local (Intel Homebrew)
+./build-macos.sh --fuse --zip --dmg    # lipo both into releases/macos
 ```
+
+`--dmg` produces the disk image users get, with the app and a shortcut to
+Applications. `--zip` produces the same tree as an archive, for scripts.
 
 Both Homebrews must be on the same formula versions. `lipo` fuses two files
 into one, and a library from two different upstream releases is not one
@@ -198,9 +236,9 @@ Cross-compile for Windows x64 from Linux:
 
 ```bash
 ./setup-build-env.sh --windows
-./build.sh --windows-only                # Server only (~600KB)
+./build.sh --windows-only                # Without the window (~600KB)
 ./build.sh --windows-wxwidgets           # One-time wxWidgets build (x64)
-./build.sh --windows-only --windows-full # Server + Admin GUI (~13MB)
+./build.sh --windows-only --windows-full # With the window (~13MB)
 ./build.sh --windows-only --zip          # + zip and NSIS installer
 ```
 
@@ -211,7 +249,10 @@ For a full release including Linux:
 ./build.sh --all-full         # Linux + Windows x64 + deb + zip + NSIS
 ```
 
-**Output:** `releases/windows/x64/` (installer: `sharefs-server_*-setup.exe`, zip: `sharefs-server_*.zip`)
+**Output:** `releases/windows/x64/`, holding `sharefs.exe` (installer:
+`sharefs-server_*-setup.exe`, zip: `sharefs-server_*.zip`). Release archives
+keep the `sharefs-server_` prefix, because that is the name of this project and
+of the Debian package; the binary inside is `sharefs`.
 
 **Windows on ARM** (`releases/windows/arm64/`):
 
@@ -234,7 +275,7 @@ GitHub Actions (`.github/workflows/build.yml`) runs on every push and pull reque
 | `windows-x64` | `releases/windows/x64/` zip (+ NSIS on tags) |
 | `macos-arm64` | Apple Silicon slice, tests |
 | `macos-x86_64` | Intel slice, cross-compiled under Rosetta |
-| `macos-universal` | Fuses both slices, verifies, produces the universal zip |
+| `macos-universal` | Fuses both slices, verifies, produces the universal zip and .dmg |
 
 **Publishing a release:** push a version tag (e.g. `v0.1.1`). The workflow builds full Linux amd64/arm64 packages, a complete Windows x64 zip with admin GUI (wxWidgets cached after the first run), NSIS installer, and attaches everything to a GitHub Release automatically.
 
@@ -274,123 +315,164 @@ cmake --build build -j$(nproc)
 
 ## Running
 
-**Note for WiFi users:** WiFi usually requires binding to a specific IP. Run `ipconfig` (Windows) or `ip addr` (Linux) to find your adapter's IP address and add it to the `bind_ip` setting in `sharefs.conf` (or use the Admin GUI).
+**Note for WiFi users:** WiFi usually requires binding to a specific IP. Run `ipconfig` (Windows) or `ip addr` (Linux) to find your adapter's IP address and add it to the `bind_ip` setting in `sharefs.conf` (or the **Server** tab in the window).
+
+### Keeping it running
+
+Whether sharing survives the window closing is one tick box on the **Sharing**
+tab: **Keep sharing when this window is closed**. Ticking it sets up whatever
+this platform uses for that, and starts it:
+
+| Platform | What the tick box sets up |
+|----------|---------------------------|
+| Linux | The `sharefs` systemd unit |
+| macOS | A launchd agent in `~/Library/LaunchAgents` |
+| Windows | The ShareFS service (needs administrator rights) |
+
+The same switch from a terminal is `sharefs autostart on` and
+`sharefs autostart off`, and `sharefs status` says what is set up and what is
+running.
+
+Only one copy can hold the UDP ports, so ShareFS hands over between the
+in-window server and the background one for you when you use that tick box.
 
 ### Linux (Debian/Ubuntu Package)
 
-The server runs automatically as a system service.
+Sharing runs as a system service from the moment the package is installed.
 
 ```bash
-# Check status
-sudo systemctl status sharefs
+# What is configured, and what is running
+sharefs status
 
-# Start/Stop/Restart
+# Or through systemd directly
+sudo systemctl status sharefs
 sudo systemctl start sharefs
 sudo systemctl stop sharefs
 sudo systemctl restart sharefs
 
-# Run Admin GUI (Installed to system path)
-sharefs-admin
+# Open the window
+sharefs
 ```
+
 Configuration is at `/etc/sharefs.conf`.
 
 Non-root management (Debian/Ubuntu package):
-- Add your user to the `sharefs-admin` group: `sudo usermod -aG sharefs-admin $USER` then re-login.
-- `/etc/sharefs.conf` is owned by `root:sharefs-admin` with mode `664`, so group members can edit it without sudo.
-- A polkit rule allows the `sharefs-admin` group to start/stop/restart `sharefs.service` without a password (e.g., `systemctl restart sharefs`).
+- The installer adds the user who ran it to the `sharefs-admin` group. **Log out
+  and back in** for that to take effect. To add somebody else:
+  `sudo usermod -aG sharefs-admin someone`.
+- `/etc/sharefs.conf` is owned by `root:sharefs-admin` with mode `664`, so group
+  members can edit it without sudo.
+- A polkit rule allows the `sharefs-admin` group to start, stop and restart
+  `sharefs.service` without a password.
+
+### macOS
+
+Open **ShareFS** from Applications. On first run it asks for a folder and starts
+sharing; after that it reopens with what you had.
+
+Everything is per-user and needs no `sudo`: settings in
+`~/Library/Application Support/ShareFS/sharefs.conf`, the log in
+`~/Library/Logs/ShareFS/sharefs.log`, and the login item in
+`~/Library/LaunchAgents`. The command line is inside the bundle if you want it
+from a terminal:
+
+```bash
+/Applications/ShareFS.app/Contents/MacOS/ShareFS status
+```
 
 ### Windows (Installer)
 
-1. Run the Windows installer (`sharefs-server_*.exe`).
-2. Everything is installed to `C:\ShareFS`:
-   - Binaries: `sharefs-server.exe`, `sharefs-admin.exe`, `sharefs-service.exe`
-   - Config: `sharefs.conf`
-   - Shares: `C:\ShareFS\Shares\Public` (writeable for local users out of the box)
-3. Firewall rules for UDP 32770, 32771, 49171 are added during install.
-4. Start/stop/restart the server via the Admin GUI (controls the Windows service) or run `sharefs-service.exe start|stop`.
+1. Run `sharefs-server_*-setup.exe`.
+2. `sharefs.exe` is installed to `C:\ShareFS`, with the default share at
+   `C:\ShareFS\Shares\Public` (writeable for local users out of the box).
+3. Configuration goes to `%ProgramData%\ShareFS\sharefs.conf`, which is where
+   both the window and the service read it. An existing
+   `C:\ShareFS\sharefs.conf` from an earlier version is moved there on upgrade.
+4. Firewall rules for UDP 32770, 32771 and 49171 are added during install.
+5. The service is installed and started, so sharing survives a reboot. Turn it
+   off with the tick box on the **Sharing** tab, or
+   `sharefs autostart off` from an administrator prompt.
 
 ### Windows (Zip Archive)
 
-Extract the zip archive anywhere (no installer, no firewall rules configured automatically).
+Extract it anywhere. No installer, and no firewall rules configured for you.
 
-- **Run Server:** Double-click `sharefs-server.exe` (or run from CMD: `sharefs-server.exe sharefs.conf`).
-- **Run Admin GUI:** Double-click `sharefs-admin.exe` (if included).
+- **Window:** double-click `sharefs.exe`.
+- **Foreground server:** `sharefs.exe serve` from a command prompt.
+- **Service:** `sharefs.exe service install` then `sharefs.exe service start`,
+  from an **administrator** prompt. `sc query ShareFSServer` reports on it, and
+  `sharefs.exe service stop` then `... uninstall` removes it.
 
 > **Firewall Warning:** Ensure Windows Firewall allows UDP ports 32770, 32771, and 49171.
 
-#### Windows Service Installation
+### Using the window
 
-For automatic startup and running in the background, you can install the server as a Windows service:
+Nine tenths of setting up a file server is choosing a folder, so a fresh
+install asks that and nothing else. Everything after that lives on tabs:
 
-1. Open PowerShell or Command Prompt **as Administrator**
-2. Navigate to the installation directory
-3. Run: `sharefs-service.exe install`
-4. The service is configured to start automatically on boot
-5. To start immediately: `sharefs-service.exe start`
-   - Or use the Services console (`services.msc`)
+- **Server** - Log level, broadcast interval, Access+ authentication, and which
+  configuration file is in use
+- **Shares** - Add, edit and remove shared folders
+- **Printers** - Configure network printer shares
+- **MIME Map** - Map file extensions to RISC OS filetypes
+- **Sharing** - One status line, the tick box described above, and a live log
 
-**Configuration file location**: `C:\ShareFS\sharefs.conf`  
-(Falls back to `./sharefs.conf` in the executable directory if the above does not exist)
+**How one binary can be a window and a server.** The window links the same
+server core the command line runs, so pressing **Start** runs the server on a
+worker thread *inside this process* rather than launching a child. The status
+it shows is a fact rather than a probe, and the log pane is fed straight from
+the server. Turning on **Keep sharing when this window is closed** moves that
+same core into a service or launchd agent, which is the only difference between
+the two.
 
-**Managing the service:**
-- **Start**: `sharefs-service.exe start` or use Services console
-- **Stop**: `sharefs-service.exe stop`
-- **Check status**: `sc query ShareFSServer`
-- **Uninstall**: `sharefs-service.exe stop` (if running), then `sharefs-service.exe uninstall`
-
-**Admin GUI integration**: The Admin GUI automatically detects if the Windows service is installed and provides start/stop/restart controls for it.
-
-### Using the Admin GUI
-
-The **ShareFS Admin** GUI allows easy configuration and control.
-
-**How the two binaries relate.** `sharefs-server` is the headless server: plain
-C11 with no GUI dependency, and it is what the systemd unit and the Windows
-service run. `sharefs-admin` links the same server core, so when you press
-**Start** in the GUI the server runs on a worker thread *inside the admin
-process* rather than as a separate child. That means the status it shows is a
-fact rather than a probe, and the log pane is fed straight from the server.
-
-If a system service is already running the server, the GUI detects that and
-drives the service instead, leaving its own in-process host idle.
-
-`sharefs-server` accepts `--no-ui` for symmetry with the GUI; the server binary
-is always headless, so the flag is a no-op and exists so scripts can pass it
-freely. `--help` lists the options.
-
-**Features:**
-
-- **Server Tab** - Configure log level, broadcast interval, and Access+ authentication
-- **Shares Tab** - Add, edit, and remove file shares
-- **Printers Tab** - Configure network printer shares
-- **MIME Map Tab** - Map file extensions to RISC OS filetypes
-- **Control Tab** - Start/stop/restart server with live log viewer
+For a machine with no graphical libraries at all, build with
+`-DSFS_BUILD_ADMIN=OFF`. That produces the same `sharefs` binary and the same
+command line without linking wxWidgets; running it with no arguments serves
+instead of opening a window.
 
 ### Manual / Development Build
 
 If running directly from the build output (e.g., for testing):
 
 ```bash
-# Linux (amd64 PC)
-./releases/linux/amd64/sharefs-server releases/linux/amd64/sharefs.conf
-./releases/linux/amd64/sharefs-admin
+# Linux (amd64 PC) - serve with a specific configuration, or open the window
+./releases/linux/amd64/sharefs serve --config releases/linux/amd64/sharefs.conf
+./releases/linux/amd64/sharefs
 
 # Linux (Raspberry Pi / arm64)
-./releases/linux/arm64/sharefs-server releases/linux/arm64/sharefs.conf
-./releases/linux/arm64/sharefs-admin
+./releases/linux/arm64/sharefs serve --config releases/linux/arm64/sharefs.conf
 
 # Windows (x64)
-releases/windows/x64/sharefs-server.exe releases/windows/x64/sharefs.conf
+releases/windows/x64/sharefs.exe serve --config releases/windows/x64/sharefs.conf
 ```
 
 ---
 
 ## Configuration
 
-The server is configured via `sharefs.conf`. ShareFS Admin is the easiest way to edit this file, but you can also edit it manually:
+Everything is one file, `sharefs.conf`. The ShareFS window is the easiest way to
+edit it, but it is plain text and you can edit it by hand.
+
+**Where it lives.** ShareFS searches these in order and uses the first one it
+finds, and the window, the command line and the background service all use the
+same list, so the file you edit is the file that gets served:
+
+| Platform | Searched, in order |
+|----------|--------------------|
+| Linux | `/etc/sharefs.conf`, `~/.config/sharefs/sharefs.conf`, `./sharefs.conf` |
+| macOS | `/opt/homebrew/etc`, `/usr/local/etc` or `/etc/sharefs.conf`, then `~/Library/Application Support/ShareFS/sharefs.conf`, then `./sharefs.conf` |
+| Windows | `%ProgramData%\ShareFS`, `C:\ShareFS`, `%APPDATA%\ShareFS`, then `.\sharefs.conf` |
+
+The system-wide location comes first because that is what a service reads.
+`sharefs config search` prints the list with the one in use marked, and
+`sharefs config path` prints just that one. In the window it is on the
+**Server** tab, and **File → Reveal Configuration File** opens it.
+
+There is no need to create it yourself: a first run writes one, with a single
+share, wherever this platform keeps it.
 
 ```ini
-# ShareFS Server Configuration
+# ShareFS Configuration
 
 [server]
 log_level = info
@@ -452,7 +534,7 @@ Map file extensions to RISC OS filetypes (3-character hex codes):
 | `png`     | `B60`    | PNG Image                                                                |
 | `zip`     | `A91`    | Archive                                                                  |
 
-The Admin GUI includes common default mappings when creating a new configuration.
+ShareFS has a built-in table of common mappings, so a `[mimemap]` section is only needed to add to it or override it.
 
 For protocol-level detail, see [docs/protocol.md](docs/protocol.md).
 
@@ -507,9 +589,27 @@ Set `log_file` in the `[server]` section to put the log wherever you want. If it
 
 The server logs its version and the log file it opened at startup, so `sharefs.log` always records which build produced it.
 
-### Admin GUI won't start
+### The window will not start
 
-Install wxWidgets development packages before building (see **Building** above). On Debian/Ubuntu: `libwxgtk3.2-dev`.
+Install the wxWidgets development packages before building (see **Building**
+above). On Debian/Ubuntu: `libwxgtk3.2-dev`. A build without them still
+produces a working `sharefs`; it serves rather than opening a window.
+
+### The window saves settings that seem to be ignored
+
+Check that the file it is editing is the file the server reads:
+
+```bash
+sharefs config search
+```
+
+The marked line is the one in use, and the first one found always wins. Before
+0.1.8 the window and the server searched in different orders, so with a file in
+two places one could be edited while the other was served.
+
+On Linux, if saving fails outright, you are probably not yet in the
+`sharefs-admin` group in this session: the package adds you at install time, but
+group membership only applies to logins made afterwards.
 
 ---
 

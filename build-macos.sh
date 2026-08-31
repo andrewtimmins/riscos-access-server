@@ -5,18 +5,23 @@
 # Copyright (C) 2025-2026 Andy Timmins
 # Licensed under the GNU General Public License version 3 or later.
 #
-# Builds a single-architecture "slice", bundles the libraries the admin GUI
-# needs into the .app so it runs on a machine with no Homebrew, and can fuse
-# two slices into a universal release.
+# Builds a single-architecture "slice", bundles the libraries ShareFS.app needs
+# so it runs on a machine with no Homebrew, and can fuse two slices into a
+# universal release.
 #
 #   ./build-macos.sh --arch arm64            # build one slice
 #   ./build-macos.sh --arch x86_64           # build the other
 #   ./build-macos.sh --fuse                  # lipo both into a universal tree
+#   ./build-macos.sh --fuse --dmg            # and package it for release
 #   ./build-macos.sh --arch arm64 --zip      # slice + zip it
 #
-# The server binary has no dependencies at all, so it is built universal
-# directly when fusing. The admin GUI links wxWidgets, which Homebrew ships
-# per-architecture only, hence the two-slice dance.
+# What ships is ShareFS.app and nothing else. It is the whole product: the
+# window, the server it runs in-process, and the same command line as every
+# other platform at Contents/MacOS/ShareFS. Earlier releases put a separate
+# sharefs-server binary and a sample configuration file in the archive and left
+# the user to copy the latter into /usr/local/etc as root.
+#
+# wxWidgets is Homebrew-only and per-architecture, hence the two-slice dance.
 
 set -euo pipefail
 
@@ -24,14 +29,16 @@ ARCH=""
 DO_BUILD=true
 DO_FUSE=false
 DO_ZIP=false
+DO_DMG=false
 
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--arch) ARCH="${2:-}"; shift ;;
 		--fuse) DO_FUSE=true ;;
 		--zip)  DO_ZIP=true ;;
+		--dmg)  DO_DMG=true ;;
 		--help|-h)
-			echo "Usage: $0 [--arch x86_64|arm64] [--fuse] [--zip]"
+			echo "Usage: $0 [--arch x86_64|arm64] [--fuse] [--zip] [--dmg]"
 			exit 0 ;;
 		*) echo "Unknown option: $1" >&2; exit 1 ;;
 	esac
@@ -40,6 +47,11 @@ done
 
 # A bare --fuse means "lipo what is already there" rather than build first.
 if [ "$DO_FUSE" = true ] && [ -z "$ARCH" ]; then
+	DO_BUILD=false
+fi
+# Packaging on its own means "package what is already there".
+if { [ "$DO_ZIP" = true ] || [ "$DO_DMG" = true ]; } && [ -z "$ARCH" ] &&
+	[ "$DO_FUSE" = false ]; then
 	DO_BUILD=false
 fi
 [ -n "$ARCH" ] || ARCH="$(uname -m)"
@@ -149,11 +161,11 @@ rewrite_install_names() {
 
 bundle_dependencies() {
 	local app="$1"
-	local exe="$app/Contents/MacOS/sharefs-admin"
+	local exe="$app/Contents/MacOS/ShareFS"
 	local frameworks="$app/Contents/Frameworks"
 
 	mkdir -p "$frameworks"
-	log "[$ARCH] collecting dependencies for the admin GUI"
+	log "[$ARCH] collecting dependencies for ShareFS.app"
 	collect_deps "$exe" "$frameworks"
 
 	# The executable looks one level up from Contents/MacOS.
@@ -179,7 +191,7 @@ bundle_dependencies() {
 
 verify_bundle() {
 	local app="$1"
-	local exe="$app/Contents/MacOS/sharefs-admin"
+	local exe="$app/Contents/MacOS/ShareFS"
 	local leaked
 	leaked="$(otool -L "$exe" | tail -n +2 | awk '{print $1}' |
 		grep -E '^(/opt/homebrew|/usr/local)/' || true)"
@@ -216,14 +228,18 @@ build_slice() {
 	log "[$ARCH] staging"
 	rm -rf "$STAGE"
 	mkdir -p "$STAGE"
-	cp "$BUILD_DIR/src/sharefs-server" "$STAGE/"
-	cp "$ROOT/sharefs.conf.sample" "$STAGE/"
-	cp "$ROOT/README.md" "$ROOT/LICENSE" "$STAGE/"
+	cp "$ROOT/LICENSE" "$STAGE/"
+	cp "$ROOT/README.md" "$STAGE/"
 
 	if [ "$build_admin" = ON ]; then
-		cp -R "$BUILD_DIR/admin/sharefs-admin.app" "$STAGE/"
-		bundle_dependencies "$STAGE/sharefs-admin.app"
-		verify_bundle "$STAGE/sharefs-admin.app"
+		cp -R "$BUILD_DIR/admin/ShareFS.app" "$STAGE/"
+		bundle_dependencies "$STAGE/ShareFS.app"
+		verify_bundle "$STAGE/ShareFS.app"
+	else
+		# No wxWidgets, so there is no app to ship; the bare binary is still
+		# useful to somebody running a headless Mac.
+		cp "$BUILD_DIR/src/sharefs" "$STAGE/"
+		cp "$ROOT/sharefs.conf.sample" "$STAGE/"
 	fi
 
 	log "[$ARCH] slice staged in $STAGE"
@@ -251,15 +267,17 @@ fuse_slices() {
 	# Start from the arm64 tree, then replace each Mach-O with a fused one.
 	cp -R "$arm_stage"/. "$RELEASE/"
 
-	lipo -create "$x86_stage/sharefs-server" "$arm_stage/sharefs-server" \
-		-output "$RELEASE/sharefs-server"
+	if [ -f "$arm_stage/sharefs" ] && [ -f "$x86_stage/sharefs" ]; then
+		lipo -create "$x86_stage/sharefs" "$arm_stage/sharefs" \
+			-output "$RELEASE/sharefs"
+	fi
 
-	if [ -d "$arm_stage/sharefs-admin.app" ]; then
-		local app="$RELEASE/sharefs-admin.app"
+	if [ -d "$arm_stage/ShareFS.app" ]; then
+		local app="$RELEASE/ShareFS.app"
 		lipo -create \
-			"$x86_stage/sharefs-admin.app/Contents/MacOS/sharefs-admin" \
-			"$arm_stage/sharefs-admin.app/Contents/MacOS/sharefs-admin" \
-			-output "$app/Contents/MacOS/sharefs-admin"
+			"$x86_stage/ShareFS.app/Contents/MacOS/ShareFS" \
+			"$arm_stage/ShareFS.app/Contents/MacOS/ShareFS" \
+			-output "$app/Contents/MacOS/ShareFS"
 
 		# Every bundled library has to be fused too, or the app is universal
 		# but can only load its libraries on one architecture.
@@ -267,14 +285,14 @@ fuse_slices() {
 		for lib in "$app/Contents/Frameworks"/*.dylib; do
 			[ -f "$lib" ] || continue
 			base="$(basename "$lib")"
-			x86_lib="$x86_stage/sharefs-admin.app/Contents/Frameworks/$base"
+			x86_lib="$x86_stage/ShareFS.app/Contents/Frameworks/$base"
 			if [ ! -f "$x86_lib" ]; then
 				echo "ERROR: $base is missing from the x86_64 slice." >&2
 				echo "The two Homebrews are out of step; lipo cannot fuse" >&2
 				echo "libraries that are not the same version." >&2
 				exit 1
 			fi
-			lipo -create "$x86_lib" "$arm_stage/sharefs-admin.app/Contents/Frameworks/$base" \
+			lipo -create "$x86_lib" "$arm_stage/ShareFS.app/Contents/Frameworks/$base" \
 				-output "$lib"
 		done
 
@@ -285,8 +303,8 @@ fuse_slices() {
 
 	log "verifying universal binaries"
 	local ok=true
-	for target in "$RELEASE/sharefs-server" \
-	              "$RELEASE/sharefs-admin.app/Contents/MacOS/sharefs-admin"; do
+	for target in "$RELEASE/sharefs" \
+	              "$RELEASE/ShareFS.app/Contents/MacOS/ShareFS"; do
 		[ -f "$target" ] || continue
 		local archs
 		archs="$(lipo -archs "$target")"
@@ -301,11 +319,17 @@ fuse_slices() {
 	log "universal build in $RELEASE"
 }
 
-make_zip() {
+release_version() {
 	local version
 	version="$(sed -n 's/^project(sharefs-server VERSION \([0-9.]*\).*/\1/p' \
 		"$ROOT/CMakeLists.txt")"
 	[ -n "$version" ] || version="unknown"
+	echo "$version"
+}
+
+make_zip() {
+	local version
+	version="$(release_version)"
 
 	local src="$RELEASE"
 	[ -d "$src" ] || src="$STAGE"
@@ -331,8 +355,50 @@ make_zip() {
 	log "wrote releases/$name.zip"
 }
 
+# A disk image, because dragging one app to Applications is what a Mac user
+# expects and what the README can describe in one line. The zip is kept for
+# anyone scripting a download.
+make_dmg() {
+	local version
+	version="$(release_version)"
+
+	local src="$RELEASE"
+	[ -d "$src" ] || src="$STAGE"
+
+	if [ ! -d "$src/ShareFS.app" ]; then
+		echo "ERROR: no ShareFS.app in $src to package" >&2
+		echo "Build a slice with wxWidgets available first." >&2
+		exit 1
+	fi
+
+	local name="sharefs-server_${version}-macos-universal"
+	[ "$src" = "$STAGE" ] && name="sharefs-server_${version}-macos-${ARCH}"
+
+	log "packaging $name.dmg"
+	mkdir -p "$ROOT/releases"
+	rm -f "$ROOT/releases/$name.dmg"
+
+	local pkg="$ROOT/releases/.dmg/ShareFS"
+	rm -rf "$ROOT/releases/.dmg"
+	mkdir -p "$pkg"
+	ditto "$src/ShareFS.app" "$pkg/ShareFS.app"
+	cp "$ROOT/LICENSE" "$pkg/"
+	cp "$ROOT/README.md" "$pkg/"
+	ln -s /Applications "$pkg/Applications"
+
+	hdiutil create \
+		-volname "ShareFS $version" \
+		-srcfolder "$pkg" \
+		-ov -format UDZO \
+		"$ROOT/releases/$name.dmg" > /dev/null
+
+	rm -rf "$ROOT/releases/.dmg"
+	log "wrote releases/$name.dmg"
+}
+
 [ "$DO_BUILD" = true ] && build_slice
 [ "$DO_FUSE" = true ] && fuse_slices
 [ "$DO_ZIP" = true ] && make_zip
+[ "$DO_DMG" = true ] && make_dmg
 
 log "done"

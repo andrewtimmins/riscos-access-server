@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=ShareFS
+GenericName=RISC OS File Sharing
+Comment=Share folders and printers with RISC OS machines
+Exec=sharefs
+Icon=sharefs
+Terminal=false
+Categories=Network;FileTransfer;System;
+Keywords=RISC OS;ShareFS;Acorn;file sharing;Freeway;
+StartupWMClass=sharefs

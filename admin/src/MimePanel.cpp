@@ -1,5 +1,5 @@
 /*
-  ShareFS Server - Admin GUI MIME Panel
+  ShareFS - MIME Panel
 
   Copyright (C) 2025-2026 Andy Timmins
 

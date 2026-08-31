@@ -1,5 +1,5 @@
 /*
-  ShareFS Server - Admin GUI Config I/O Implementation
+  ShareFS - Config I/O Implementation
 
   Copyright (C) 2025-2026 Andy Timmins
 

@@ -45,6 +45,14 @@ install(FILES sharefs.conf.sample DESTINATION share/sharefs)
 # Install systemd service file (Linux only)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     install(FILES debian/sharefs.service DESTINATION lib/systemd/system)
+
+    # A launcher, so ShareFS is in the applications menu rather than being
+    # something you have to know the name of and type.
+    if(SFS_BUILD_ADMIN)
+        install(FILES debian/sharefs.desktop DESTINATION share/applications)
+        install(FILES debian/icons/sharefs.svg
+                DESTINATION share/icons/hicolor/scalable/apps)
+    endif()
 endif()
 
 # CPack configuration for Debian packages

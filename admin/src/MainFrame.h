@@ -1,5 +1,5 @@
 /*
-  ShareFS Server - Admin GUI Main Frame Header
+  ShareFS - Main Frame Header
 
   Copyright (C) 2025-2026 Andy Timmins
 
@@ -39,6 +39,10 @@ public:
     void LoadConfig(const std::string& path);
     void SaveConfig();
     void RevertConfig();
+
+    // Nothing has been configured yet: ask for a folder, write the file, and
+    // start sharing. Called instead of LoadConfig when no configuration exists.
+    void RunFirstRun();
     
     void SetModified(bool modified);
     bool IsModified() const { return m_modified; }
@@ -66,6 +70,7 @@ private:
     void OnExit(wxCommandEvent& event);
     void OnClose(wxCloseEvent& event);
     void OnStatusBarSize(wxSizeEvent& event);
+    void OnRevealConfig(wxCommandEvent& event);
     void PositionStatusDot();
     void OnAbout(wxCommandEvent& event);
     
@@ -96,7 +101,8 @@ enum {
     ID_APPLY,
     ID_REVERT,
     ID_START,
-    ID_STOP
+    ID_STOP,
+    ID_REVEAL_CONFIG
 };
 
 #endif // MAINFRAME_H

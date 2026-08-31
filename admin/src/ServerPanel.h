@@ -1,5 +1,5 @@
 /*
-  ShareFS Server - Admin GUI Server Panel
+  ShareFS - Server Panel
 
   Copyright (C) 2025-2026 Andy Timmins
 

@@ -1,5 +1,5 @@
 /*
-  ShareFS Server - Windows Service Wrapper
+  ShareFS Server - Windows Service Integration
 
   Copyright (C) 2025-2026 Andy Timmins
 
@@ -19,10 +19,13 @@
 
 #ifdef _WIN32
 
+#include "service.h"
+
 #include "config.h"
 #include "handle.h"
 #include "log.h"
 #include "net.h"
+#include "paths.h"
 #include "platform.h"
 #include "printer.h"
 #include "server.h"
@@ -31,9 +34,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
-
-#define SERVICE_NAME "ShareFSServer"
-#define SERVICE_DISPLAY_NAME "ShareFS Server"
 
 // Global service state
 static SERVICE_STATUS g_service_status = {0};
@@ -45,34 +45,11 @@ static HANDLE g_server_thread = NULL;
 static sfs_config g_config;
 static sfs_net g_net;
 static sfs_handle_table g_handles;
-static volatile int g_running = 0;
-
-// Find configuration file
-static const char *find_config_file(void) {
-  // Windows service config search paths
-    static const char *search_paths[] = {
-      "C:\\ShareFS\\sharefs.conf",
-      "C:\\ProgramData\\ShareFS\\sharefs.conf",
-      "sharefs.conf",
-      NULL};
-
-  for (const char **p = search_paths; *p != NULL; ++p) {
-    FILE *f = fopen(*p, "r");
-    if (f) {
-      fclose(f);
-      return *p;
-    }
-  }
-  return NULL;
-}
 
 // Server thread function
 static DWORD WINAPI server_thread_func(LPVOID param) {
   (void)param;
-
-  // Run the server
   sfs_server_run(&g_config, &g_net, &g_handles);
-
   return 0;
 }
 
@@ -129,7 +106,7 @@ static VOID WINAPI service_main(DWORD argc, LPTSTR *argv) {
 
   // Register control handler
   g_status_handle =
-      RegisterServiceCtrlHandlerEx(SERVICE_NAME, service_ctrl_handler, NULL);
+      RegisterServiceCtrlHandlerEx(SFS_SERVICE_NAME, service_ctrl_handler, NULL);
   if (!g_status_handle) {
     return;
   }
@@ -146,11 +123,24 @@ static VOID WINAPI service_main(DWORD argc, LPTSTR *argv) {
     return;
   }
 
-  // Find config file
-  const char *config_path = find_config_file();
-  if (!config_path) {
-    report_service_status(SERVICE_STOPPED, ERROR_FILE_NOT_FOUND, 0);
-    return;
+  // The same search the GUI and the command line use; see src/paths.h. This
+  // used to be a private list in this file, in a different order from the one
+  // in main.c, so the service could read a different file from the one the
+  // GUI was editing.
+  char config_path[SFS_PATH_MAX];
+  int created_config = 0;
+  if (sfs_paths_find_config(config_path, sizeof(config_path)) != 0) {
+    // Nothing to find, which happens when the service is installed by hand
+    // rather than by the installer. Write a working configuration instead of
+    // refusing to start, as `sharefs serve` does; the service runs as
+    // LocalSystem, so the default location is the machine-wide one.
+    if (sfs_paths_default_config(config_path, sizeof(config_path)) != 0 ||
+        sfs_paths_write_default_config(config_path, NULL, NULL, NULL, 0) != 0) {
+      report_service_status(SERVICE_STOPPED, ERROR_FILE_NOT_FOUND, 0);
+      CloseHandle(g_stop_event);
+      return;
+    }
+    created_config = 1;
   }
 
   // Initialize platform
@@ -160,12 +150,11 @@ static VOID WINAPI service_main(DWORD argc, LPTSTR *argv) {
     return;
   }
 
-  // Initialize logging
-  sfs_log_init();
-
-  // Load and validate config
+  // Load and validate config before opening the log, because the config is
+  // what says where the log goes. Opening it first meant log_file was ignored
+  // for the service but honoured for the server, which is the sort of
+  // difference nobody finds until they go looking for the log.
   if (sfs_config_load(config_path, &g_config) != 0) {
-    sfs_log(SFS_LOG_ERROR, "Failed to load config: %s", config_path);
     sfs_platform_shutdown();
     report_service_status(SERVICE_STOPPED, ERROR_SERVICE_SPECIFIC_ERROR, 0);
     CloseHandle(g_stop_event);
@@ -173,7 +162,6 @@ static VOID WINAPI service_main(DWORD argc, LPTSTR *argv) {
   }
 
   if (sfs_config_validate(&g_config) != 0) {
-    sfs_log(SFS_LOG_ERROR, "Invalid configuration");
     sfs_config_unload(&g_config);
     sfs_platform_shutdown();
     report_service_status(SERVICE_STOPPED, ERROR_SERVICE_SPECIFIC_ERROR, 0);
@@ -181,8 +169,13 @@ static VOID WINAPI service_main(DWORD argc, LPTSTR *argv) {
     return;
   }
 
+  sfs_log_set_path(g_config.server.log_file);
+  sfs_log_init();
   sfs_log_set_level(sfs_log_level_from_string(g_config.server.log_level));
-  sfs_log(SFS_LOG_INFO, "Service starting with config %s", config_path);
+  sfs_log(SFS_LOG_INFO, "ShareFS %s starting as a service", SHAREFS_VERSION);
+  sfs_log(SFS_LOG_INFO, "Configuration: %s", config_path);
+  if (created_config)
+    sfs_log(SFS_LOG_INFO, "First run: that file has just been created");
 
   // Open network
   if (g_config.server.bind_ip) {
@@ -192,6 +185,7 @@ static VOID WINAPI service_main(DWORD argc, LPTSTR *argv) {
   if (sfs_net_open(&g_net, g_config.server.bind_ip) != 0) {
     sfs_log(SFS_LOG_ERROR, "Failed to open network sockets");
     sfs_config_unload(&g_config);
+    sfs_log_shutdown();
     sfs_platform_shutdown();
     report_service_status(SERVICE_STOPPED, ERROR_SERVICE_SPECIFIC_ERROR, 0);
     CloseHandle(g_stop_event);
@@ -205,8 +199,12 @@ static VOID WINAPI service_main(DWORD argc, LPTSTR *argv) {
   report_service_status(SERVICE_RUNNING, NO_ERROR, 0);
   sfs_log(SFS_LOG_INFO, "Service running");
 
+  // A previous run in this process may have left the flag set; the service
+  // only runs once per process today, but clearing it is what makes that an
+  // implementation detail rather than a trap.
+  sfs_server_clear_stop();
+
   // Create server thread
-  g_running = 1;
   g_server_thread = CreateThread(NULL, 0, server_thread_func, NULL, 0, NULL);
 
   if (!g_server_thread) {
@@ -227,7 +225,7 @@ static VOID WINAPI service_main(DWORD argc, LPTSTR *argv) {
 
   // Cleanup
   sfs_log(SFS_LOG_INFO, "Service stopping");
-  g_running = 0;
+  sfs_server_request_stop();
 
   // Allow server thread some time to finish
   WaitForSingleObject(g_server_thread, 5000);
@@ -245,19 +243,34 @@ static VOID WINAPI service_main(DWORD argc, LPTSTR *argv) {
   report_service_status(SERVICE_STOPPED, NO_ERROR, 0);
 }
 
-// Install the service
-static int install_service(void) {
+int sfs_service_dispatch(void) {
+  SERVICE_TABLE_ENTRY dispatch_table[] = {{SFS_SERVICE_NAME, service_main},
+                                          {NULL, NULL}};
+
+  if (StartServiceCtrlDispatcher(dispatch_table))
+    return 0;
+
+  // Anything else means we were run from a shell or a shortcut rather than by
+  // the SCM, and the caller should behave like an ordinary program.
+  return -1;
+}
+
+int sfs_service_install(void) {
   SC_HANDLE scm, service;
   char path[MAX_PATH];
 
-  // Get full path to this executable
   if (!GetModuleFileName(NULL, path, MAX_PATH)) {
     fprintf(stderr, "Error: Cannot determine executable path (%lu)\n",
             GetLastError());
     return 1;
   }
 
-  // Open SCM
+  // The service runs the same binary in service mode, which the SCM reaches by
+  // passing no arguments at all; the quoted path plus "service run" is
+  // explicit about it and survives a path containing spaces.
+  char command[MAX_PATH + 32];
+  snprintf(command, sizeof(command), "\"%s\" service run", path);
+
   scm = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
   if (!scm) {
     fprintf(stderr, "Error: Cannot open Service Control Manager (%lu)\n",
@@ -266,45 +279,42 @@ static int install_service(void) {
     return 1;
   }
 
-  // Create service
-  service = CreateService(scm, SERVICE_NAME, SERVICE_DISPLAY_NAME,
+  service = CreateService(scm, SFS_SERVICE_NAME, SFS_SERVICE_DISPLAY_NAME,
                           SERVICE_ALL_ACCESS, SERVICE_WIN32_OWN_PROCESS,
-                          SERVICE_AUTO_START, SERVICE_ERROR_NORMAL, path, NULL,
-                          NULL, "Tcpip\0", NULL, NULL);
+                          SERVICE_AUTO_START, SERVICE_ERROR_NORMAL, command,
+                          NULL, NULL, "Tcpip\0", NULL, NULL);
 
   if (!service) {
     DWORD err = GetLastError();
     CloseServiceHandle(scm);
     if (err == ERROR_SERVICE_EXISTS) {
-      fprintf(stderr, "Error: Service already exists\n");
-      fprintf(stderr, "Use 'sharefs-service.exe uninstall' first\n");
+      fprintf(stderr, "Error: the service is already installed.\n");
+      fprintf(stderr, "Run 'sharefs service uninstall' first.\n");
     } else {
       fprintf(stderr, "Error: Cannot create service (%lu)\n", err);
     }
     return 1;
   }
 
-  // Set description
   SERVICE_DESCRIPTION desc;
-  desc.lpDescription =
-      "Provides ShareFS file sharing for RISC OS clients";
+  desc.lpDescription = "Shares files with RISC OS machines over ShareFS";
   ChangeServiceConfig2(service, SERVICE_CONFIG_DESCRIPTION, &desc);
 
   CloseServiceHandle(service);
   CloseServiceHandle(scm);
 
-  // Create config directory if needed
-  CreateDirectory("C:\\ProgramData\\ShareFS", NULL);
+  char config_path[SFS_PATH_MAX];
+  if (sfs_paths_find_config(config_path, sizeof(config_path)) != 0)
+    sfs_paths_default_config(config_path, sizeof(config_path));
 
-  printf("Service installed successfully.\n");
-  printf("Configuration file: C:\\ProgramData\\ShareFS\\sharefs.conf\n");
-  printf("To start: sharefs-service.exe start\n");
-  printf("The service is configured to start automatically on boot.\n");
+  printf("Service installed.\n");
+  printf("Configuration file: %s\n", config_path);
+  printf("To start it now: sharefs service start\n");
+  printf("It will also start automatically at boot.\n");
   return 0;
 }
 
-// Uninstall the service
-static int uninstall_service(void) {
+int sfs_service_uninstall(void) {
   SC_HANDLE scm, service;
 
   scm = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
@@ -315,31 +325,29 @@ static int uninstall_service(void) {
     return 1;
   }
 
-  service = OpenService(scm, SERVICE_NAME, DELETE | SERVICE_QUERY_STATUS);
+  service = OpenService(scm, SFS_SERVICE_NAME, DELETE | SERVICE_QUERY_STATUS);
   if (!service) {
     DWORD err = GetLastError();
     CloseServiceHandle(scm);
     if (err == ERROR_SERVICE_DOES_NOT_EXIST) {
-      fprintf(stderr, "Error: Service is not installed\n");
+      fprintf(stderr, "Error: the service is not installed.\n");
     } else {
       fprintf(stderr, "Error: Cannot open service (%lu)\n", err);
     }
     return 1;
   }
 
-  // Check if service is running
   SERVICE_STATUS status;
   if (QueryServiceStatus(service, &status)) {
     if (status.dwCurrentState != SERVICE_STOPPED) {
-      fprintf(stderr, "Error: Service is running\n");
-      fprintf(stderr, "Use 'sharefs-service.exe stop' first\n");
+      fprintf(stderr, "Error: the service is running.\n");
+      fprintf(stderr, "Run 'sharefs service stop' first.\n");
       CloseServiceHandle(service);
       CloseServiceHandle(scm);
       return 1;
     }
   }
 
-  // Delete service
   if (!DeleteService(service)) {
     fprintf(stderr, "Error: Cannot delete service (%lu)\n", GetLastError());
     CloseServiceHandle(service);
@@ -350,12 +358,11 @@ static int uninstall_service(void) {
   CloseServiceHandle(service);
   CloseServiceHandle(scm);
 
-  printf("Service uninstalled successfully.\n");
+  printf("Service uninstalled.\n");
   return 0;
 }
 
-// Start the service
-static int start_service_cmd(void) {
+int sfs_service_start(void) {
   SC_HANDLE scm, service;
 
   scm = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);
@@ -366,31 +373,29 @@ static int start_service_cmd(void) {
   }
 
   service =
-      OpenService(scm, SERVICE_NAME, SERVICE_START | SERVICE_QUERY_STATUS);
+      OpenService(scm, SFS_SERVICE_NAME, SERVICE_START | SERVICE_QUERY_STATUS);
   if (!service) {
     DWORD err = GetLastError();
     CloseServiceHandle(scm);
     if (err == ERROR_SERVICE_DOES_NOT_EXIST) {
-      fprintf(stderr, "Error: Service is not installed\n");
-      fprintf(stderr, "Use 'sharefs-service.exe install' first\n");
+      fprintf(stderr, "Error: the service is not installed.\n");
+      fprintf(stderr, "Run 'sharefs service install' first.\n");
     } else {
       fprintf(stderr, "Error: Cannot open service (%lu)\n", err);
     }
     return 1;
   }
 
-  // Check current status
   SERVICE_STATUS status;
   if (QueryServiceStatus(service, &status)) {
     if (status.dwCurrentState != SERVICE_STOPPED) {
-      fprintf(stderr, "Error: Service is already running\n");
+      printf("The service is already running.\n");
       CloseServiceHandle(service);
       CloseServiceHandle(scm);
-      return 1;
+      return 0;
     }
   }
 
-  // Start service
   if (!StartService(service, 0, NULL)) {
     fprintf(stderr, "Error: Cannot start service (%lu)\n", GetLastError());
     CloseServiceHandle(service);
@@ -401,12 +406,11 @@ static int start_service_cmd(void) {
   CloseServiceHandle(service);
   CloseServiceHandle(scm);
 
-  printf("Service started successfully.\n");
+  printf("Service started.\n");
   return 0;
 }
 
-// Stop the service
-static int stop_service_cmd(void) {
+int sfs_service_stop(void) {
   SC_HANDLE scm, service;
   SERVICE_STATUS status;
 
@@ -417,29 +421,27 @@ static int stop_service_cmd(void) {
     return 1;
   }
 
-  service = OpenService(scm, SERVICE_NAME, SERVICE_STOP | SERVICE_QUERY_STATUS);
+  service = OpenService(scm, SFS_SERVICE_NAME, SERVICE_STOP | SERVICE_QUERY_STATUS);
   if (!service) {
     DWORD err = GetLastError();
     CloseServiceHandle(scm);
     if (err == ERROR_SERVICE_DOES_NOT_EXIST) {
-      fprintf(stderr, "Error: Service is not installed\n");
+      fprintf(stderr, "Error: the service is not installed.\n");
     } else {
       fprintf(stderr, "Error: Cannot open service (%lu)\n", err);
     }
     return 1;
   }
 
-  // Check current status
   if (QueryServiceStatus(service, &status)) {
     if (status.dwCurrentState == SERVICE_STOPPED) {
-      fprintf(stderr, "Service is already stopped.\n");
+      printf("The service is already stopped.\n");
       CloseServiceHandle(service);
       CloseServiceHandle(scm);
       return 0;
     }
   }
 
-  // Stop service
   if (!ControlService(service, SERVICE_CONTROL_STOP, &status)) {
     fprintf(stderr, "Error: Cannot stop service (%lu)\n", GetLastError());
     CloseServiceHandle(service);
@@ -450,58 +452,38 @@ static int stop_service_cmd(void) {
   CloseServiceHandle(service);
   CloseServiceHandle(scm);
 
-  printf("Service stopped successfully.\n");
+  printf("Service stopped.\n");
   return 0;
 }
 
-// Print usage
-static void print_usage(void) {
-  printf("ShareFS Server - Windows Service Manager\n\n");
-  printf("Usage:\n");
-  printf("  sharefs-service.exe install    Install the service\n");
-  printf("  sharefs-service.exe uninstall  Uninstall the service\n");
-  printf("  sharefs-service.exe start      Start the service\n");
-  printf("  sharefs-service.exe stop       Stop the service\n");
-  printf("\n");
-  printf("Configuration file: C:\\ProgramData\\ShareFS\\sharefs.conf\n");
-  printf("(Falls back to ./sharefs.conf in the executable directory)\n");
+int sfs_service_is_installed(void) {
+  SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);
+  if (!scm)
+    return 0;
+  SC_HANDLE service = OpenService(scm, SFS_SERVICE_NAME, SERVICE_QUERY_STATUS);
+  int installed = (service != NULL);
+  if (service)
+    CloseServiceHandle(service);
+  CloseServiceHandle(scm);
+  return installed;
 }
 
-// Main entry point
-int main(int argc, char **argv) {
-  if (argc < 2) {
-    // No arguments - called by SCM
-    SERVICE_TABLE_ENTRY dispatch_table[] = {{SERVICE_NAME, service_main},
-                                            {NULL, NULL}};
-
-    if (!StartServiceCtrlDispatcher(dispatch_table)) {
-      DWORD err = GetLastError();
-      if (err == ERROR_FAILED_SERVICE_CONTROLLER_CONNECT) {
-        // Not running as service, show usage
-        print_usage();
-        return 1;
-      }
-    }
+int sfs_service_is_running(void) {
+  SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);
+  if (!scm)
+    return 0;
+  SC_HANDLE service = OpenService(scm, SFS_SERVICE_NAME, SERVICE_QUERY_STATUS);
+  if (!service) {
+    CloseServiceHandle(scm);
     return 0;
   }
-
-  // Command-line mode
-  const char *cmd = argv[1];
-
-  if (_stricmp(cmd, "install") == 0) {
-    return install_service();
-  } else if (_stricmp(cmd, "uninstall") == 0) {
-    return uninstall_service();
-  } else if (_stricmp(cmd, "start") == 0) {
-    return start_service_cmd();
-  } else if (_stricmp(cmd, "stop") == 0) {
-    return stop_service_cmd();
-  } else {
-    print_usage();
-    return 1;
-  }
+  SERVICE_STATUS status;
+  int running = 0;
+  if (QueryServiceStatus(service, &status))
+    running = (status.dwCurrentState == SERVICE_RUNNING);
+  CloseServiceHandle(service);
+  CloseServiceHandle(scm);
+  return running;
 }
 
-#else
-#error "This file is Windows-only"
 #endif // _WIN32

@@ -17,13 +17,15 @@
   along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-// Runs the server core on a worker thread inside the admin process, rather
-// than launching sharefs-server as a child. That removes the binary-discovery
+// Runs the server core on a worker thread inside this process, rather than
+// launching a second binary as a child. That removes the binary-discovery
 // problem entirely, makes the reported status authoritative instead of probed,
 // and delivers log lines straight from the server rather than through a pipe.
 //
-// The system service paths (systemd, the Windows SCM) are unaffected: when the
-// server is managed by one of those, ControlPanel drives it that way instead.
+// This is what "sharing in this window" means in ControlPanel. Sharing in the
+// background is the same core run by a service or a launchd agent instead; see
+// src/autostart.h. Only one of them can hold the UDP ports, which is why
+// ControlPanel stops one before starting the other.
 
 #ifndef EMBEDDEDSERVER_H
 #define EMBEDDEDSERVER_H

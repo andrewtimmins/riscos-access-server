@@ -83,7 +83,7 @@ jobs:
         run: |
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           ./build.sh --cross-arm64
-          file releases/linux/arm64/sharefs-server | grep -iE 'aarch64|ARM'
+          file releases/linux/arm64/sharefs | grep -iE 'aarch64|ARM'
 
   # x64 cross-compiles with the MinGW in apt. arm64 has no apt toolchain, so it
   # uses llvm-mingw, which ships aarch64-w64-mingw32-* drivers named the way
@@ -145,12 +145,12 @@ jobs:
 
       - name: Verify the binary targets the right machine
         run: |
-          server=$(find releases/windows/${{ matrix.arch }} -name 'sharefs-server.exe' | head -1)
-          file "$server"
+          binary=$(find releases/windows/${{ matrix.arch }} -name 'sharefs.exe' | head -1)
+          file "$binary"
           if [ "${{ matrix.arch }}" = "arm64" ]; then
-            file "$server" | grep -iE 'Aarch64|ARM64'
+            file "$binary" | grep -iE 'Aarch64|ARM64'
           else
-            file "$server" | grep -iE 'x86-64|x86_64'
+            file "$binary" | grep -iE 'x86-64|x86_64'
           fi
 
       - name: Upload release
@@ -259,35 +259,36 @@ jobs:
       - name: Restore permissions
         # Artifact upload does not preserve the executable bit.
         run: |
-          chmod +x build-mac-*/appstage/sharefs-server
-          chmod +x build-mac-*/appstage/sharefs-admin.app/Contents/MacOS/sharefs-admin
+          chmod +x build-mac-*/appstage/ShareFS.app/Contents/MacOS/ShareFS
 
       - name: Fuse into a universal build
-        run: ./build-macos.sh --fuse --zip
+        run: ./build-macos.sh --fuse --zip --dmg
 
       - name: Verify the result is universal and self-contained
         run: |
-          server=releases/macos/sharefs-server
-          admin=releases/macos/sharefs-admin.app/Contents/MacOS/sharefs-admin
-          lipo -archs "$server"
-          lipo -archs "$admin"
-          lipo -archs "$server" | grep -q x86_64
-          lipo -archs "$server" | grep -q arm64
-          lipo -archs "$admin"  | grep -q x86_64
-          lipo -archs "$admin"  | grep -q arm64
+          # One binary now: ShareFS.app is the whole product, and the command
+          # line lives inside it at Contents/MacOS/ShareFS.
+          app=releases/macos/ShareFS.app/Contents/MacOS/ShareFS
+          lipo -archs "$app"
+          lipo -archs "$app" | grep -q x86_64
+          lipo -archs "$app" | grep -q arm64
           # Nothing may point back at a Homebrew prefix that users will not have.
-          if otool -L "$admin" | grep -E '/opt/homebrew|/usr/local'; then
-            echo "::error::The admin app still references Homebrew paths"
+          if otool -L "$app" | grep -E '/opt/homebrew|/usr/local'; then
+            echo "::error::ShareFS.app still references Homebrew paths"
             exit 1
           fi
-          # The universal server must actually run on this machine.
-          "$server" --help > /dev/null
+          # It must actually run on this machine, and the same binary must
+          # answer the command line rather than trying to open a window.
+          "$app" --version
+          "$app" --help > /dev/null
 
       - name: Upload macOS universal release
         uses: actions/upload-artifact@v4
         with:
           name: sharefs-macos-universal
-          path: releases/*.zip
+          path: |
+            releases/*.zip
+            releases/*.dmg
           if-no-files-found: error
 
   release:
@@ -337,17 +338,19 @@ jobs:
           cp release-assets/windows-x64/*-setup.exe upload/
           cp release-assets/windows-arm64/*.zip upload/
           cp release-assets/windows-arm64/*-setup.exe upload/
-          cp release-assets/linux-amd64/sharefs-server upload/sharefs-server-linux-amd64
-          cp release-assets/linux-amd64/sharefs-admin upload/sharefs-admin-linux-amd64
-          cp release-assets/linux-arm64/sharefs-server upload/sharefs-server-linux-arm64
-          cp release-assets/linux-arm64/sharefs-admin upload/sharefs-admin-linux-arm64
+          # One binary per architecture, not a server and an admin: see
+          # src/cli.h. Published loose as well as in the .deb for anyone who
+          # wants to drop it onto a machine without a package manager.
+          cp release-assets/linux-amd64/sharefs upload/sharefs-linux-amd64
+          cp release-assets/linux-arm64/sharefs upload/sharefs-linux-arm64
           cp release-assets/macos/*.zip upload/
+          cp release-assets/macos/*.dmg upload/
           ls -la upload/
           # Every architecture must contribute a distinct file. A collision
           # here would publish one arch's build under both names.
           expected=$(ls release-assets/*/*.zip release-assets/*/*-setup.exe \
-                        release-assets/*/*.deb 2>/dev/null | wc -l)
-          actual=$(ls upload/*.zip upload/*-setup.exe upload/*.deb 2>/dev/null | wc -l)
+                        release-assets/*/*.deb release-assets/*/*.dmg 2>/dev/null | wc -l)
+          actual=$(ls upload/*.zip upload/*-setup.exe upload/*.deb upload/*.dmg 2>/dev/null | wc -l)
           if [ "$expected" != "$actual" ]; then
             echo "::error::collected $actual packaged assets from $expected inputs; names must collide"
             exit 1

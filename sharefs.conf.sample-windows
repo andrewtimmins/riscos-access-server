@@ -1,4 +1,16 @@
-# ShareFS Server - Sample Configuration (Windows)
+# ShareFS - Sample Configuration (Windows)
+#
+# ShareFS looks for its configuration in this order, and uses the first one it
+# finds, whether it was started from the window, the command line or the
+# service:
+#
+#   %ProgramData%\ShareFS\sharefs.conf   <- where the installer puts it
+#   C:\ShareFS\sharefs.conf              <- where versions before 0.1.8 put it
+#   %APPDATA%\ShareFS\sharefs.conf
+#   .\sharefs.conf
+#
+# `sharefs config search` prints the list with the one in use marked, and
+# `sharefs config path` prints just that one.
 
 [server]
 # Logging: none, error, info, debug, protocol
