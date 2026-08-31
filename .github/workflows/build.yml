@@ -374,19 +374,25 @@ jobs:
         run: |
           mkdir -p upload
           shopt -s nullglob
-          cp release-assets/linux-amd64/*.deb upload/
-          cp release-assets/linux-arm64/*.deb upload/
-          cp release-assets/windows-x64/*.zip upload/
-          cp release-assets/windows-x64/*-setup.exe upload/
-          cp release-assets/windows-arm64/*.zip upload/
-          cp release-assets/windows-arm64/*-setup.exe upload/
-          # One binary per architecture, not a server and an admin: see
-          # src/cli.h. Published loose as well as in the .deb for anyone who
-          # wants to drop it onto a machine without a package manager.
+
+          # Every packaged asset from every platform, in one loop rather than a
+          # cp per architecture. With nullglob a pattern matching nothing
+          # disappears entirely, so `cp release-assets/windows-arm64/*-setup.exe
+          # upload/` became `cp upload/` and failed with "missing destination
+          # file operand" - there is no arm64 installer, and that line had
+          # never run before v0.1.8 went to tag.
+          for asset in release-assets/*/*.deb release-assets/*/*.zip \
+                       release-assets/*/*-setup.exe release-assets/*/*.dmg; do
+            cp "$asset" upload/
+          done
+
+          # The loose Linux binaries, which are renamed by architecture. One
+          # binary per architecture, not a server and an admin: see src/cli.h.
+          # Published outside the .deb for anyone dropping it onto a machine
+          # without a package manager.
           cp release-assets/linux-amd64/sharefs upload/sharefs-linux-amd64
           cp release-assets/linux-arm64/sharefs upload/sharefs-linux-arm64
-          cp release-assets/macos/*.zip upload/
-          cp release-assets/macos/*.dmg upload/
+
           ls -la upload/
           # Every architecture must contribute a distinct file. A collision
           # here would publish one arch's build under both names.
