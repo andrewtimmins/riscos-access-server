@@ -263,6 +263,16 @@ of the Debian package; the binary inside is `sharefs`.
 
 MinGW for aarch64 is **not in apt** — you need a separate toolchain ([mingw-woarm64-build](https://github.com/Windows-on-ARM-Experiments/mingw-woarm64-build)) or a native build on Windows ARM hardware. ARM64 releases are zip-only (no NSIS installer).
 
+**Windows on ARM ships the server without the window.** wxWidgets cannot be
+cross-compiled for aarch64 with llvm-mingw: it uses libc++, which no longer
+provides the `char_traits` primary template, and `wxUString` is declared as
+`std::basic_string<wxChar32>`, so wxWidgets' own base library fails to compile.
+Version 3.3 declares it the same way, so there is no version to move to. The
+ARM64 `sharefs.exe` therefore has no window; it shares, and the command line
+(`sharefs serve`, `status`, `config`, `service`) is identical to every other
+platform. Windows on ARM also runs x64 binaries under emulation, so the x64 zip
+or installer is how to get the window on those machines today.
+
 ### Continuous integration
 
 GitHub Actions (`.github/workflows/build.yml`) runs on every push and pull request:

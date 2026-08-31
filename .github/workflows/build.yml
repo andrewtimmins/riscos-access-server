@@ -103,6 +103,19 @@ jobs:
   # uses llvm-mingw, which ships aarch64-w64-mingw32-* drivers named the way
   # cmake/toolchains/mingw-w64-aarch64.cmake expects. Pinned, because a
   # toolchain that moves under us would change the binaries we ship.
+  #
+  # arm64 ships the server without the window; x64 ships both. That is not a
+  # choice, it is wxWidgets: llvm-mingw uses libc++, which no longer provides
+  # the char_traits primary template, and wxUString is declared as
+  # std::basic_string<wxChar32>. So wxWidgets' own base library fails to build:
+  #
+  #   include/c++/v1/string:2982: error: implicit instantiation of undefined
+  #   template 'std::char_traits<unsigned int>'
+  #
+  # wxWidgets 3.3 declares it the same way, so there is no version to move to;
+  # fixing this means carrying a patch to wxWidgets or supplying the
+  # specialisation ourselves. Until then the arm64 zip holds a sharefs.exe with
+  # no window, which still shares and still answers the whole command line.
   windows:
     name: windows (${{ matrix.arch }})
     runs-on: ubuntu-latest
@@ -146,19 +159,19 @@ jobs:
             wxwidgets-mingw-${{ matrix.arch }}-3.2.4-${{ runner.os }}-
 
       - name: Build wxWidgets for MinGW (first run only)
-        if: steps.wx-cache.outputs.cache-hit != 'true' && env.RELEASE_BUILD == 'true'
+        if: steps.wx-cache.outputs.cache-hit != 'true' && env.RELEASE_BUILD == 'true' && matrix.arch == 'x64'
         run: ./build.sh --windows-wxwidgets --windows-arch ${{ matrix.arch }}
 
       - name: Build without the window
-        if: env.RELEASE_BUILD != 'true'
+        if: env.RELEASE_BUILD != 'true' || matrix.arch != 'x64'
         run: ./build.sh --windows-only --windows-arch ${{ matrix.arch }} --zip
 
       - name: Build full release
-        if: env.RELEASE_BUILD == 'true'
+        if: env.RELEASE_BUILD == 'true' && matrix.arch == 'x64'
         run: ./build.sh --windows-only --windows-full --windows-arch ${{ matrix.arch }} --zip
 
       - name: The full build must contain the window
-        if: env.RELEASE_BUILD == 'true'
+        if: env.RELEASE_BUILD == 'true' && matrix.arch == 'x64'
         run: |
           # --windows-full falls back to a server-only build when wxWidgets is
           # missing, with a warning that is easy to miss in a log. A release
