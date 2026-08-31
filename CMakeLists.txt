@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(sharefs-server VERSION 0.1.8 LANGUAGES C)
+project(sharefs-server VERSION 0.1.9 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
