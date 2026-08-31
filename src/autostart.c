@@ -115,6 +115,14 @@ int sfs_autostart_stop_now(char *err, size_t err_sz) {
   return 0;
 }
 
+// The service's command line is written by whoever installed it, and the
+// installer puts the binary in one place, so there is nothing to drift.
+int sfs_autostart_repair(char *err, size_t err_sz) {
+  if (err && err_sz)
+    err[0] = '\0';
+  return 0;
+}
+
 // ---------------------------------------------------------------------------
 // macOS: a launchd agent under the user's own home directory
 // ---------------------------------------------------------------------------
@@ -288,6 +296,54 @@ int sfs_autostart_stop_now(char *err, size_t err_sz) {
   return 0;
 }
 
+// Whether the agent already names this executable. Read as text rather than
+// parsed as a property list: the file is one this program wrote, and the only
+// question is whether the path in it is still the right one.
+static int agent_names_this_executable(const char *plist, const char *exe) {
+  FILE *f = fopen(plist, "r");
+  if (!f)
+    return 0;
+
+  char line[SFS_PATH_MAX + 64];
+  int found = 0;
+  while (fgets(line, sizeof(line), f)) {
+    if (strstr(line, exe)) {
+      found = 1;
+      break;
+    }
+  }
+  fclose(f);
+  return found;
+}
+
+int sfs_autostart_repair(char *err, size_t err_sz) {
+  if (err && err_sz)
+    err[0] = '\0';
+
+  char plist[SFS_PATH_MAX];
+  if (agent_plist_path(plist, sizeof(plist)) != 0)
+    return 0;
+
+  struct stat st;
+  if (stat(plist, &st) != 0)
+    return 0; // Background sharing is off; nothing to keep in step.
+
+  char exe[SFS_PATH_MAX];
+  if (executable_path(exe, sizeof(exe)) != 0)
+    return 0;
+
+  if (agent_names_this_executable(plist, exe))
+    return 0;
+
+  // The login item points at a copy of ShareFS that is somewhere else, and
+  // possibly nowhere at all. Rewriting it costs a moment and is what the user
+  // would otherwise have to work out to do by hand, having first noticed that
+  // sharing had quietly stopped.
+  if (sfs_autostart_set(1, err, err_sz) != 0)
+    return -1;
+  return 1;
+}
+
 // ---------------------------------------------------------------------------
 // Linux and the rest: the systemd unit the package installs
 // ---------------------------------------------------------------------------
@@ -406,6 +462,14 @@ int sfs_autostart_stop_now(char *err, size_t err_sz) {
       snprintf(err, err_sz, "Could not stop the sharefs service.");
     return -1;
   }
+  return 0;
+}
+
+// The unit file belongs to the package and names /usr/bin/sharefs, which is
+// where the package puts it. Nothing drifts.
+int sfs_autostart_repair(char *err, size_t err_sz) {
+  if (err && err_sz)
+    err[0] = '\0';
   return 0;
 }
 

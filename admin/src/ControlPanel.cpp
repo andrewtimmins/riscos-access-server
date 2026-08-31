@@ -108,6 +108,16 @@ ControlPanel::ControlPanel(wxWindow *parent, MainFrame *frame)
   Bind(EVT_EMBEDDED_SERVER_LOG, &ControlPanel::OnEmbeddedLog, this);
   Bind(EVT_EMBEDDED_SERVER_STOPPED, &ControlPanel::OnEmbeddedStopped, this);
 
+  // If the login item points at a copy of ShareFS that has moved or gone,
+  // put it right before reporting anything; see sfs_autostart_repair.
+  char repairErr[512];
+  const int repaired = sfs_autostart_repair(repairErr, sizeof(repairErr));
+  if (repaired > 0)
+    AppendLog("[SHAREFS] Background sharing was pointing at an older copy of "
+              "ShareFS; it now points at this one.\n");
+  else if (repaired < 0)
+    AppendLog(wxString("[ERROR] ") + repairErr + "\n");
+
   PollBackground();
   UpdateStatus();
   m_timer.Start(1000);

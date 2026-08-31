@@ -96,21 +96,36 @@ public:
     MainFrame *frame = new MainFrame("ShareFS");
     frame->Show();
 
-    if (!m_configArg.empty()) {
-      frame->LoadConfig(m_configArg.ToStdString());
-      return true;
-    }
+    // Loading the configuration is queued rather than done here, because it
+    // can put a dialog on the screen: the first-run dialog when there is no
+    // configuration, or an error if there is one that will not load.
+    //
+    // A modal dialog opened from OnInit runs a nested event loop before the
+    // application has finished launching. On macOS that stops NSApplication
+    // completing its launch sequence, so the Dock icon bounces for ever, the
+    // dialog never appears and the window is dead - which is exactly what
+    // 0.1.8 did on every Mac that had no configuration yet, meaning every new
+    // installation. CallAfter runs it once the event loop is going, which is
+    // where anything that shows a window belongs.
+    const wxString configArg = m_configArg;
+    CallAfter([frame, configArg] {
+      if (!configArg.empty()) {
+        frame->LoadConfig(configArg.ToStdString());
+        return;
+      }
 
-    // The search order is shared with the server and the command line, so the
-    // file shown here is the file that gets served. It used to be a second
-    // list in this file that disagreed with the one in main.c.
-    char found[SFS_PATH_MAX];
-    if (sfs_paths_find_config(found, sizeof(found)) == 0) {
-      frame->LoadConfig(found);
-      return true;
-    }
+      // The search order is shared with the server and the command line, so
+      // the file shown here is the file that gets served. It used to be a
+      // second list in this file that disagreed with the one in main.c.
+      char found[SFS_PATH_MAX];
+      if (sfs_paths_find_config(found, sizeof(found)) == 0) {
+        frame->LoadConfig(found);
+        return;
+      }
 
-    frame->RunFirstRun();
+      frame->RunFirstRun();
+    });
+
     return true;
   }
 
