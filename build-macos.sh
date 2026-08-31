@@ -84,25 +84,55 @@ log() { printf '==> %s\n' "$*"; }
 # exist on a machine without Homebrew, so the app has to carry its own copies
 # and refer to them relatively. Collect the closure, then rewrite every
 # reference to point inside the bundle.
+#
+# Not every reference is an absolute path. Newer Homebrew bottles record their
+# dependencies as @rpath/libfoo.dylib and carry an LC_RPATH of
+# @loader_path/../lib, which resolves back into Homebrew. Those used to be
+# skipped here, so libwebp went into the bundle while the libsharpyuv it needs
+# did not, and the reference from libwebpdemux to libwebp was left as @rpath.
+# The result launched perfectly on any machine with Homebrew installed - every
+# machine that builds it - and aborted on a user's, which is what a
+# self-contained bundle is supposed to prevent.
 # ---------------------------------------------------------------------------
 
-# Print the non-system libraries a Mach-O file links against.
+# Print the libraries a Mach-O file links against that have to be dealt with:
+# absolute paths outside the system, and @rpath references. Anything already
+# pointing inside the bundle is left alone.
 direct_deps() {
-	otool -L "$1" | tail -n +2 | awk '{print $1}' |
-		grep -v '^/usr/lib/' | grep -v '^/System/' |
-		grep -v '^@' || true
+	otool -L "$1" | tail -n +2 | awk '{print $1}' | while IFS= read -r dep; do
+		case "$dep" in
+			/usr/lib/* | /System/*) ;;
+			@executable_path/*) ;;
+			# @loader_path/<name> with nothing further is a reference this
+			# script wrote, and is already correct. One with a path in it, such
+			# as @loader_path/../lib/x, is Homebrew's and is not.
+			@loader_path/*/*) printf '%s\n' "$dep" ;;
+			@loader_path/*) ;;
+			*) printf '%s\n' "$dep" ;;
+		esac
+	done
 }
 
-# Resolve a recorded install name to a real file on disk.
+# Resolve a recorded install name to a real file on disk. An @rpath or
+# @loader_path name carries no usable path, so it is looked up by basename in
+# this architecture's Homebrew, which is where it came from.
 resolve_lib() {
 	local name="$1"
 	if [ -f "$name" ]; then
 		printf '%s\n' "$name"
 		return 0
 	fi
-	# Fall back to the same basename inside this arch's Homebrew.
+
 	local base
 	base="$(basename "$name")"
+
+	# lib/ first: it is a flat directory of symlinks into the Cellar, so it
+	# answers in one stat rather than a walk of every installed formula.
+	if [ -e "$BREW_PREFIX/lib/$base" ]; then
+		printf '%s\n' "$BREW_PREFIX/lib/$base"
+		return 0
+	fi
+
 	local candidate
 	candidate="$(find "$BREW_PREFIX/opt" -name "$base" -type f 2>/dev/null | head -1 || true)"
 	[ -n "$candidate" ] && printf '%s\n' "$candidate"
@@ -147,6 +177,27 @@ collect_deps() {
 	done
 }
 
+# Print the LC_RPATH entries of a Mach-O file that point into Homebrew.
+brew_rpaths() {
+	otool -l "$1" | awk '/LC_RPATH/ { rpath = 1; next }
+	                     rpath && $1 == "path" { print $2; rpath = 0 }' |
+		grep -E '^(/opt/homebrew|/usr/local)/' || true
+}
+
+# Remove them. Nothing in a finished bundle should need one: every reference
+# has been rewritten to @loader_path or @executable_path by now. Leaving them
+# in is what made the missing webp libraries invisible for two releases, since
+# an @rpath reference nobody had rewritten still resolved through Homebrew on
+# every machine that builds this. Without the rpath, such a miss fails on the
+# build machine, where somebody will see it.
+strip_brew_rpaths() {
+	local binary="$1" rpath
+	while IFS= read -r rpath; do
+		[ -n "$rpath" ] || continue
+		install_name_tool -delete_rpath "$rpath" "$binary" 2>/dev/null || true
+	done < <(brew_rpaths "$binary")
+}
+
 # Point every reference at the copy inside the bundle.
 rewrite_install_names() {
 	local binary="$1" frameworks="$2" prefix="$3"
@@ -180,7 +231,9 @@ bundle_dependencies() {
 		base="$(basename "$lib")"
 		install_name_tool -id "@loader_path/$base" "$lib" 2>/dev/null || true
 		rewrite_install_names "$lib" "$frameworks" "@loader_path"
+		strip_brew_rpaths "$lib"
 	done
+	strip_brew_rpaths "$exe"
 
 	# Ad-hoc re-sign: editing a Mach-O invalidates any existing signature, and
 	# on Apple Silicon an unsigned binary will not run at all.
@@ -189,15 +242,30 @@ bundle_dependencies() {
 		echo "    warning: codesign failed; the app may not launch" >&2
 }
 
+# Every Mach-O file in the bundle, not just the executable, and @rpath counts
+# as a leak: it resolves through LC_RPATH entries that point into Homebrew.
+# Checking the executable alone is what let the webp libraries ship broken.
 verify_bundle() {
 	local app="$1"
 	local exe="$app/Contents/MacOS/ShareFS"
-	local leaked
-	leaked="$(otool -L "$exe" | tail -n +2 | awk '{print $1}' |
-		grep -E '^(/opt/homebrew|/usr/local)/' || true)"
+	local frameworks="$app/Contents/Frameworks"
+	local leaked="" file found
+	for file in "$exe" "$frameworks"/*.dylib; do
+		[ -f "$file" ] || continue
+		found="$(otool -L "$file" | tail -n +2 | awk '{print $1}' |
+			grep -E '^(/opt/homebrew|/usr/local)/|^@rpath/' || true)"
+		# A leftover Homebrew rpath is reported too: it is not a fault on its
+		# own, but it is the thing that hides one.
+		found="$found$(brew_rpaths "$file")"
+		[ -n "$found" ] || continue
+		leaked="$leaked
+$(basename "$file"):"
+		leaked="$leaked
+$(printf '  %s\n' $found)"
+	done
 	if [ -n "$leaked" ]; then
-		echo "ERROR: the app still references Homebrew paths:" >&2
-		printf '  %s\n' $leaked >&2
+		echo "ERROR: the app still references libraries outside itself:" >&2
+		printf '%s\n' "$leaked" >&2
 		return 1
 	fi
 	log "[$ARCH] bundle is self-contained"
