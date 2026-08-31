@@ -196,6 +196,23 @@ def test_reported_size_is_the_real_size(results):
     client.close()
 
 
+# Whether something else already holds the ports the server needs. Without
+# this check a busy port produced "server exited immediately; check the
+# config", which sends you to look at the one thing that is not wrong. RPCEmu
+# binds all three of these while it is running.
+def ports_in_use():
+    held = []
+    for port in (32770, 32771, 49171):
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.bind(("", port))
+        except OSError:
+            held.append(port)
+        finally:
+            probe.close()
+    return held
+
+
 def main():
     if len(sys.argv) != 3:
         print(__doc__)
@@ -210,7 +227,16 @@ def main():
     )
     time.sleep(1.0)
     if server.poll() is not None:
-        print("server exited immediately; check the config")
+        held = ports_in_use()
+        if held:
+            print(
+                "server exited immediately: UDP "
+                + ", ".join(str(p) for p in held)
+                + " already in use by another program (an emulator such as "
+                "RPCEmu binds all three). Stop it and run the tests again."
+            )
+        else:
+            print("server exited immediately; check the config")
         return 2
 
     results = Results()

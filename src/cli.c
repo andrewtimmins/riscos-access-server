@@ -175,8 +175,14 @@ int sfs_cli_serve(const char *config_path) {
             cfg.server.bind_ip);
   }
   if (sfs_net_open(&net, cfg.server.bind_ip) != 0) {
-    fprintf(stderr, "Failed to open network sockets. Is ShareFS already "
-                    "running in the background?\n");
+    // Naming the ports matters: the thing holding them is not always another
+    // ShareFS. RPCEmu binds all three when it is emulating a RISC OS machine
+    // on the same computer.
+    fprintf(stderr,
+            "Could not bind UDP ports %d, %d and %d.\n"
+            "Another program is using them: ShareFS already running in the "
+            "background, or an emulator such as RPCEmu.\n",
+            SFS_PORT_BROADCAST, SFS_PORT_AUTH, SFS_PORT_RPC);
     sfs_log_shutdown();
     sfs_config_unload(&cfg);
     sfs_platform_shutdown();
