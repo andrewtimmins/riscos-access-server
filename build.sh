@@ -285,6 +285,12 @@ build_wxwidgets_mingw() {
     mkdir -p build-mingw
     cd build-mingw
 
+    # Output goes to a log rather than to the terminal, because a wxWidgets
+    # build is thousands of lines of nothing much. On failure the tail of it is
+    # printed: without that, a build failing in CI said only "wxWidgets build
+    # failed" and there was nothing to act on.
+    local log="$WX_MINGW_DIR/build-mingw/build.log"
+
     echo "Configuring wxWidgets for $MINGW_HOST..."
     if ! ../wxWidgets-3.2.4/configure \
         --host="$MINGW_HOST" \
@@ -293,17 +299,25 @@ build_wxwidgets_mingw() {
         --disable-shared \
         --enable-unicode \
         --disable-mediactrl \
-        --disable-webview > /dev/null 2>&1; then
-        echo "Error: wxWidgets configure failed (see $WX_MINGW_DIR/build-mingw/config.log)"
+        --disable-webview > "$log" 2>&1; then
+        echo "Error: wxWidgets configure failed. Last 40 lines:"
+        tail -40 "$log"
+        echo "Full configure log: $WX_MINGW_DIR/build-mingw/config.log"
         exit 1
     fi
 
     echo "Building wxWidgets..."
-    if ! make -j"$NPROC" > /dev/null 2>&1; then
-        echo "Error: wxWidgets build failed"
+    if ! make -j"$NPROC" > "$log" 2>&1; then
+        echo "Error: wxWidgets build failed. Last 60 lines:"
+        tail -60 "$log"
         exit 1
     fi
-    make install > /dev/null 2>&1
+
+    if ! make install > "$log" 2>&1; then
+        echo "Error: wxWidgets install failed. Last 40 lines:"
+        tail -40 "$log"
+        exit 1
+    fi
 
     cd "$SCRIPT_DIR"
     echo ""
