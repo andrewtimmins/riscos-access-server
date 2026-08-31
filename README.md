@@ -277,11 +277,21 @@ GitHub Actions (`.github/workflows/build.yml`) runs on every push and pull reque
 | `macos-x86_64` | Intel slice, cross-compiled under Rosetta |
 | `macos-universal` | Fuses both slices, verifies, produces the universal zip and .dmg |
 
-**Publishing a release:** push a version tag (e.g. `v0.1.1`). The workflow builds full Linux amd64/arm64 packages, a complete Windows x64 zip with admin GUI (wxWidgets cached after the first run), NSIS installer, and attaches everything to a GitHub Release automatically.
+**Rehearsing a release:** an ordinary push builds the Windows binary without
+the window, because wxWidgets for MinGW has to be built from source first. Run
+the workflow by hand with **full** ticked (Actions → Build → Run workflow) to
+build exactly what a release ships, without publishing anything. That also
+leaves the wxWidgets cache warm, so the tag build afterwards is quick. Worth
+doing before any release that touched the Windows build.
+
+**Publishing a release:** push a version tag (e.g. `v0.1.8`). The workflow
+builds full Linux amd64/arm64 packages, a complete Windows zip with the window
+compiled in, the NSIS installer, the macOS universal .dmg and .zip, and
+attaches everything to a GitHub Release automatically.
 
 ```bash
-git tag v0.1.1
-git push origin v0.1.1
+git tag v0.1.8
+git push origin v0.1.8
 ```
 
 Windows on ARM is not built in CI (no MinGW aarch64 on hosted runners).

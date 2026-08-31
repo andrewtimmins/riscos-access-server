@@ -5,12 +5,26 @@ on:
     branches: [main, master]
     tags: ["v*"]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "Build the full release, as a tag push does"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Whether this run builds what a release ships. A tag push does; so does
+  # workflow_dispatch with `full`, which is how the Windows build with the
+  # window compiled in gets exercised, and the wxWidgets cache warmed, before
+  # the tag exists. Ordinary pushes build the server without wxWidgets, so
+  # until this existed the first compile of the GUI on Windows was the release
+  # itself. A rehearsal never publishes: the release job below still requires a
+  # tag.
+  RELEASE_BUILD: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.full) }}
 
 jobs:
   # Release v0.1.5 shipped assets named 0.1.1 because CMakeLists.txt had not
@@ -132,16 +146,31 @@ jobs:
             wxwidgets-mingw-${{ matrix.arch }}-3.2.4-${{ runner.os }}-
 
       - name: Build wxWidgets for MinGW (first run only)
-        if: steps.wx-cache.outputs.cache-hit != 'true' && (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+        if: steps.wx-cache.outputs.cache-hit != 'true' && env.RELEASE_BUILD == 'true'
         run: ./build.sh --windows-wxwidgets --windows-arch ${{ matrix.arch }}
 
-      - name: Build server + zip
-        if: github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v'))
+      - name: Build without the window
+        if: env.RELEASE_BUILD != 'true'
         run: ./build.sh --windows-only --windows-arch ${{ matrix.arch }} --zip
 
       - name: Build full release
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        if: env.RELEASE_BUILD == 'true'
         run: ./build.sh --windows-only --windows-full --windows-arch ${{ matrix.arch }} --zip
+
+      - name: The full build must contain the window
+        if: env.RELEASE_BUILD == 'true'
+        run: |
+          # --windows-full falls back to a server-only build when wxWidgets is
+          # missing, with a warning that is easy to miss in a log. A release
+          # must not ship that quietly, and the size is the plainest signal:
+          # roughly 600KB without the window, some 13MB with it.
+          binary=$(find releases/windows/${{ matrix.arch }} -name 'sharefs.exe' | head -1)
+          size=$(wc -c < "$binary")
+          echo "sharefs.exe is $size bytes"
+          if [ "$size" -lt 3000000 ]; then
+            echo "::error::sharefs.exe is $size bytes, which is too small to have wxWidgets in it"
+            exit 1
+          fi
 
       - name: Verify the binary targets the right machine
         run: |
