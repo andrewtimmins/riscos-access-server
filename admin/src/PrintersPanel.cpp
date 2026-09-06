@@ -64,7 +64,10 @@ PrintersPanel::PrintersPanel(wxWindow *parent, MainFrame *frame)
   m_detailPanel->Hide();
   wxBoxSizer *detailSizer = new wxBoxSizer(wxVERTICAL);
 
-  wxFlexGridSizer *grid = new wxFlexGridSizer(6, 2, 8, 10);
+  // Two columns and as many rows as it takes. Giving a row count as well is a
+  // capacity, not a hint: this was six rows for seven rows of content, and
+  // wxWidgets put a debug assertion on the screen before the window appeared.
+  wxFlexGridSizer *grid = new wxFlexGridSizer(2, 8, 10);
   grid->AddGrowableCol(1);
 
   grid->Add(new wxStaticText(m_detailPanel, wxID_ANY, "Name:"), 0,

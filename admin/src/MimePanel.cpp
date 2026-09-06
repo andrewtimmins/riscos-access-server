@@ -103,7 +103,8 @@ MimePanel::MimePanel(wxWindow *parent, MainFrame *frame)
   m_detailPanel->Hide();
   wxBoxSizer *detailSizer = new wxBoxSizer(wxVERTICAL);
 
-  wxFlexGridSizer *grid = new wxFlexGridSizer(3, 2, ui::kRowGap, ui::kLabelGap);
+  // Columns only; see the note in PrintersPanel.
+  wxFlexGridSizer *grid = new wxFlexGridSizer(2, ui::kRowGap, ui::kLabelGap);
   grid->AddGrowableCol(1);
 
   grid->Add(new wxStaticText(m_detailPanel, wxID_ANY, "Extension:"), 0,

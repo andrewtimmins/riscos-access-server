@@ -92,7 +92,9 @@ ServerPanel::ServerPanel(wxWindow *parent, MainFrame *frame)
   // Settings group
   wxStaticBoxSizer *settingsBox =
       new wxStaticBoxSizer(wxVERTICAL, this, "Configuration");
-  wxFlexGridSizer *grid = new wxFlexGridSizer(4, 2, 10, 15);
+  // Columns only; see the note in PrintersPanel. This was exactly full, so
+  // the next setting anyone added here would have asserted.
+  wxFlexGridSizer *grid = new wxFlexGridSizer(2, 10, 15);
   grid->AddGrowableCol(1);
 
   // Bind IP with interface dropdown
@@ -190,10 +192,7 @@ ServerPanel::ServerPanel(wxWindow *parent, MainFrame *frame)
   refBox->Add(refGrid, 1, wxEXPAND | wxALL, 10);
   mainSizer->Add(refBox, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 15);
 
-  // Reflect an explicit log_file when the configuration sets one.
-  const std::string &configured = m_frame->GetConfig().Server().log_file;
-  m_logPathLabel->SetLabel(configured.empty() ? DefaultLogPath()
-                                              : wxString(configured));
+  UpdateLogPath();
 
   mainSizer->AddStretchSpacer();
 
@@ -212,10 +211,24 @@ void ServerPanel::OnBrowseConfig(wxCommandEvent &event) {
   m_frame->LoadConfig(dlg.GetPath().ToStdString());
 }
 
+// Reflect an explicit log_file when the configuration sets one, and the
+// platform default when it does not.
+//
+// This has to run whenever the configuration changes, not only when the panel
+// is built. The panels are constructed before any configuration is loaded, so
+// at that point log_file is always empty and the answer is always the default
+// - which is what the Server tab used to show however the file was set.
+void ServerPanel::UpdateLogPath() {
+  const std::string &configured = m_frame->GetConfig().Server().log_file;
+  m_logPathLabel->SetLabel(configured.empty() ? DefaultLogPath()
+                                              : wxString::FromUTF8(configured));
+}
+
 void ServerPanel::RefreshFromConfig() {
   m_updating = true;
 
   m_configPath->ChangeValue(m_frame->GetConfigPath());
+  UpdateLogPath();
 
   ServerConfig &cfg = m_frame->GetConfig().Server();
 
