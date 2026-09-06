@@ -43,6 +43,7 @@ private:
   void OnBindIpChanged(wxCommandEvent &event);
   void OnRefreshInterfaces(wxCommandEvent &event);
   void PopulateNetworkInterfaces();
+  void UpdateLogPath();
 
   MainFrame *m_frame;
   wxChoice *m_logLevel;
