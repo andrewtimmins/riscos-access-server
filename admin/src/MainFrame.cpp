@@ -176,7 +176,12 @@ void MainFrame::PositionStatusDot() {
 }
 
 void MainFrame::UpdateSummary() {
-    SetStatusText(wxString::Format("%zu shares  ·  %zu printers  ·  %zu MIME rules",
+    // FromUTF8, because this file is UTF-8 and the separator is not ASCII.
+    // A narrow literal is decoded with the current locale, which on Windows is
+    // an ANSI codepage, so the two bytes of the middle dot arrived in the
+    // status bar as two characters.
+    SetStatusText(wxString::Format(wxString::FromUTF8(
+                                       "%zu shares  ·  %zu printers  ·  %zu MIME rules"),
                                    m_config.Shares().size(),
                                    m_config.Printers().size(),
                                    m_config.MimeMap().size()),
